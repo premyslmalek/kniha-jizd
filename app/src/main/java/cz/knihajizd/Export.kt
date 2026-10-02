@@ -30,11 +30,12 @@ object Export {
         val d = SimpleDateFormat("d.M.yyyy", cs)
         val h = SimpleDateFormat("HH:mm", cs)
         val sb = StringBuilder("﻿")
-        sb.append("Datum;Začátek;Konec;Start;Cíl;Km;Průměrná rychlost (km/h);Doba (min);Status;Záznam;Poznámka\r\n")
+        sb.append("Datum;Začátek;Konec;Start;Start GPS;Cíl;Cíl GPS;Km;Průměrná rychlost (km/h);Doba (min);Status;Záznam;Poznámka\r\n")
         for (t in trips.sortedBy { it.startTs }) {
             val row = listOf(
                 d.format(Date(t.startTs)), h.format(Date(t.startTs)), h.format(Date(t.endTs)),
-                t.startPlace, t.endPlace, f1(t.km), Math.round(t.avgKmh).toString(), t.minutes.toString(),
+                t.startPlace, Places.coords(t.sLat, t.sLon), t.endPlace, Places.coords(t.eLat, t.eLon),
+                f1(t.km), Math.round(t.avgKmh).toString(), t.minutes.toString(),
                 statusName(t.status), if (t.manual) "ručně" else "automaticky", t.note
             )
             sb.append(row.joinToString(";") { q(it) }).append("\r\n")
@@ -46,8 +47,8 @@ object Export {
     private const val H = 595
     private const val M = 32f
     private val cols = listOf(
-        "Datum" to 58f, "Čas" to 70f, "Start" to 170f, "Cíl" to 170f, "Km" to 42f,
-        "Ø km/h" to 42f, "Min" to 34f, "Status" to 58f, "Poznámka" to 134f
+        "Datum" to 58f, "Čas" to 70f, "Start" to 120f, "Start GPS" to 90f, "Cíl" to 120f, "Cíl GPS" to 90f,
+        "Km" to 42f, "Ø km/h" to 42f, "Min" to 34f, "Status" to 58f, "Poznámka" to 54f
     )
 
     private fun row(c: Canvas, y: Float, values: List<String>, paint: TextPaint) {
@@ -104,8 +105,8 @@ object Export {
             row(
                 page.canvas, y, listOf(
                     d.format(Date(t.startTs)), h.format(Date(t.startTs)) + "–" + h.format(Date(t.endTs)),
-                    t.startPlace, t.endPlace, f1(t.km), Math.round(t.avgKmh).toString(), t.minutes.toString(),
-                    statusName(t.status), t.note
+                    t.startPlace, Places.coords(t.sLat, t.sLon), t.endPlace, Places.coords(t.eLat, t.eLon),
+                    f1(t.km), Math.round(t.avgKmh).toString(), t.minutes.toString(), statusName(t.status), t.note
                 ), p
             )
             y += 16f

@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -355,6 +356,25 @@ class MainActivity : Activity() {
         return bar
     }
 
+    /** Řádek s přesnými souřadnicemi; klepnutím se místo otevře v mapě. */
+    private fun gpsLine(lat: Double, lon: Double, label: String): TextView {
+        val known = Places.known(lat, lon)
+        val t = tv("GPS: " + Places.coords(lat, lon) + if (known) "  ·  zobrazit na mapě" else "", 13f, if (known) BLUE else MUTED)
+        t.setPadding(0, dp(6), 0, dp(6))
+        if (known) {
+            t.isClickable = true
+            t.setOnClickListener {
+                try {
+                    val q = Places.coords(lat, lon).replace(" ", "")
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:$q?q=$q(" + Uri.encode(label) + ")")))
+                } catch (e: Exception) {
+                    toast("V telefonu není aplikace s mapou.")
+                }
+            }
+        }
+        return t
+    }
+
     private fun saveNote() {
         val e = noteEdit ?: return
         db.setNote(detailId, e.text.toString().trim())
@@ -376,8 +396,24 @@ class MainActivity : Activity() {
         val places = card()
         places.addView(tv("Start · " + timeFmt.format(Date(t.startTs)), 12f, MUTED))
         places.addView(tv(t.startPlace, 16f, INK, true))
+        places.addView(gpsLine(t.sLat, t.sLon, "Start"))
         places.addView(tv("Cíl · " + timeFmt.format(Date(t.endTs)), 12f, MUTED), lp(MATCH, WRAP, 0f, 12))
         places.addView(tv(t.endPlace, 16f, INK, true))
+        places.addView(gpsLine(t.eLat, t.eLon, "Cíl"))
+        if (Places.known(t.sLat, t.sLon) || Places.known(t.eLat, t.eLon)) {
+            places.addView(
+                btn("Načíst názvy míst znovu", Color.WHITE, INK, LINE) {
+                    saveNote()
+                    toast("Načítám názvy míst…")
+                    Thread {
+                        val sp = Places.name(this, t.sLat, t.sLon)
+                        val ep = Places.name(this, t.eLat, t.eLon)
+                        db.setPlaces(t.id, sp, ep)
+                        ui.post { if (screen == "detail" && detailId == t.id) render() }
+                    }.start()
+                }, lp(MATCH, WRAP, 0f, 12)
+            )
+        }
         body.addView(places, lp(MATCH, WRAP, 0f, 14))
 
         val stats = card()

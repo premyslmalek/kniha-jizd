@@ -5,7 +5,9 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.location.Geocoder
 import java.util.Calendar
+import java.util.Locale
 
 data class Trip(
     val id: Long,
@@ -16,7 +18,11 @@ data class Trip(
     val distM: Double,
     val status: String, // S = služební, P = soukromá, N = nezařazeno
     val manual: Boolean,
-    val note: String
+    val note: String,
+    val sLat: Double,
+    val sLon: Double,
+    val eLat: Double,
+    val eLon: Double
 ) {
     val km: Double get() = distM / 1000.0
     val minutes: Long get() = Math.round((endTs - startTs) / 60000.0)
@@ -65,10 +71,11 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
 
     private fun read(c: Cursor) = Trip(
         c.getLong(0), c.getLong(1), c.getLong(2), c.getString(3) ?: "", c.getString(4) ?: "",
-        c.getDouble(5), c.getString(6) ?: "N", c.getInt(7) == 1, c.getString(8) ?: ""
+        c.getDouble(5), c.getString(6) ?: "N", c.getInt(7) == 1, c.getString(8) ?: "",
+        c.getDouble(9), c.getDouble(10), c.getDouble(11), c.getDouble(12)
     )
 
-    private val cols = "id, start_ts, end_ts, start_place, end_place, dist_m, status, manual, note"
+    private val cols = "id, start_ts, end_ts, start_place, end_place, dist_m, status, manual, note, start_lat, start_lon, end_lat, end_lon"
 
     /** Jízdy v daném měsíci (month0 = 0..11), nejnovější první. */
     fun month(year: Int, month0: Int): List<Trip> {
@@ -101,7 +108,46 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
         writableDatabase.update("trips", v, "id = ?", arrayOf(id.toString()))
     }
 
+    fun setPlaces(id: Long, startPlace: String, endPlace: String) {
+        val v = ContentValues(); v.put("start_place", startPlace); v.put("end_place", endPlace)
+        writableDatabase.update("trips", v, "id = ?", arrayOf(id.toString()))
+    }
+
     fun delete(id: Long) {
         writableDatabase.delete("trips", "id = ?", arrayOf(id.toString()))
+    }
+}
+
+object Places {
+    // V české adrese stojí obec hned za PSČ: "Císařská 65, 798 07 Brodek u Prostějova, Česko".
+    private val afterPsc = Regex("\\b\\d{3}\\s?\\d{2}\\s+([^,]+)")
+
+    fun known(lat: Double, lon: Double) = !(lat == 0.0 && lon == 0.0)
+
+    fun coords(lat: Double, lon: Double): String =
+        if (known(lat, lon)) String.format(Locale.US, "%.5f, %.5f", lat, lon) else "nezjištěno"
+
+    /** Název místa ze souřadnic (obec, ulice); bez internetu nebo při neúspěchu vrátí souřadnice. */
+    fun name(ctx: Context, lat: Double, lon: Double): String {
+        if (!known(lat, lon)) return "Poloha nezjištěna"
+        try {
+            @Suppress("DEPRECATION")
+            val list = Geocoder(ctx, Locale("cs", "CZ")).getFromLocation(lat, lon, 5) ?: emptyList()
+            var town: String? = null
+            for (a in list) {
+                for (i in 0..a.maxAddressLineIndex) {
+                    val m = afterPsc.find(a.getAddressLine(i) ?: "")
+                    if (m != null) { town = m.groupValues[1].trim(); break }
+                }
+                if (town != null) break
+            }
+            if (town.isNullOrBlank()) town = list.firstNotNullOfOrNull { it.locality?.takeIf { s -> s.isNotBlank() } }
+            if (town.isNullOrBlank()) town = list.firstNotNullOfOrNull { it.subLocality?.takeIf { s -> s.isNotBlank() } }
+            if (town.isNullOrBlank()) town = list.firstNotNullOfOrNull { it.subAdminArea?.takeIf { s -> s.isNotBlank() } }
+            val street = list.firstOrNull()?.thoroughfare?.takeIf { it.isNotBlank() }
+            val parts = listOfNotNull(town?.takeIf { it.isNotBlank() }, street)
+            if (parts.isNotEmpty()) return parts.joinToString(", ")
+        } catch (_: Exception) {}
+        return coords(lat, lon)
     }
 }

@@ -9,7 +9,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.location.Geocoder
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -18,7 +17,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import java.util.Locale
 import kotlin.concurrent.thread
 
 /**
@@ -277,20 +275,8 @@ class TrackingService : Service(), LocationListener {
         notifyUi()
     }
 
-    /** Převod souřadnic na název místa; bez připojení k internetu vrátí souřadnice. */
-    private fun place(loc: Location?): String {
-        if (loc == null) return "Poloha nezjištěna"
-        try {
-            @Suppress("DEPRECATION")
-            val list = Geocoder(this, Locale("cs", "CZ")).getFromLocation(loc.latitude, loc.longitude, 1)
-            val a = list?.firstOrNull()
-            if (a != null) {
-                val parts = listOfNotNull(a.locality ?: a.subAdminArea, a.thoroughfare).filter { it.isNotBlank() }
-                if (parts.isNotEmpty()) return parts.joinToString(", ")
-            }
-        } catch (_: Exception) {}
-        return String.format(Locale.US, "%.5f, %.5f", loc.latitude, loc.longitude)
-    }
+    private fun place(loc: Location?): String =
+        if (loc == null) "Poloha nezjištěna" else Places.name(this, loc.latitude, loc.longitude)
 
     // Na starších verzích Androidu jsou tyto metody povinné.
     @Deprecated("Deprecated in Java")
