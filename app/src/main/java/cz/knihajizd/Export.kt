@@ -79,7 +79,7 @@ object Export {
     }
 
     /** PDF na šířku A4: nadpis, souhrn a tabulka jízd, podle potřeby na více stran. */
-    fun pdf(out: OutputStream, title: String, trips: List<Trip>) {
+    fun pdf(out: OutputStream, title: String, trips: List<Trip>, odo: String?) {
         val d = SimpleDateFormat("d.M.yyyy", cs)
         val h = SimpleDateFormat("HH:mm", cs)
         val p = TextPaint(Paint.ANTI_ALIAS_FLAG); p.textSize = 9f; p.color = Color.BLACK
@@ -89,7 +89,8 @@ object Export {
         val km = sorted.sumOf { it.km }
         val kmS = sorted.filter { it.status == "S" }.sumOf { it.km }
         val kmP = sorted.filter { it.status == "P" }.sumOf { it.km }
-        val summary = "Jízd: ${sorted.size}   Celkem: ${f1(km)} km   Služebně: ${f1(kmS)} km   Soukromě: ${f1(kmP)} km"
+        val summary = "Jízd: ${sorted.size}   Celkem: ${f1(km)} km   Služebně: ${f1(kmS)} km   Soukromě: ${f1(kmP)} km" +
+            (if (odo != null) "   $odo" else "")
 
         val doc = PdfDocument()
         var pageNo = 1

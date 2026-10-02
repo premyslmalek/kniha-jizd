@@ -72,6 +72,7 @@ class MainActivity : Activity() {
     private var thrEdit: EditText? = null
     private var minEdit: EditText? = null
     private var stopEdit: EditText? = null
+    private var odoEdit: EditText? = null
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -219,7 +220,7 @@ class MainActivity : Activity() {
     // ---------- obrazovky ----------
 
     private fun render() {
-        statusView = null; noteEdit = null; thrEdit = null; minEdit = null; stopEdit = null
+        statusView = null; noteEdit = null; thrEdit = null; minEdit = null; stopEdit = null; odoEdit = null
         root.removeAllViews()
         val v = when (screen) {
             "detail" -> detailScreen()
@@ -238,6 +239,24 @@ class MainActivity : Activity() {
         return if (TrackingService.running)
             "Automatický záznam je zapnutý. Uloží se jízdy s průměrnou rychlostí nad ${prefs.threshold} km/h."
         else "Automatický záznam neběží. Otevřete nastavení a zkontrolujte oprávnění."
+    }
+
+    private fun km0(v: Long): String = String.format(cs, "%,d", v)
+
+    /**
+     * Stav tachometru: [na začátku měsíce, na konci měsíce, aktuální stav vozu].
+     * Počítá se z počátečního stavu v nastavení a součtu všech zaznamenaných jízd.
+     */
+    private fun odometer(year: Int, month0: Int): LongArray? {
+        val start = prefs.odoStart
+        if (start <= 0) return null
+        val from = db.monthStart(year, month0)
+        val to = if (month0 == 11) db.monthStart(year + 1, 0) else db.monthStart(year, month0 + 1)
+        return longArrayOf(
+            Math.round(start + db.kmBefore(from)),
+            Math.round(start + db.kmBefore(to)),
+            Math.round(start + db.kmBefore(Long.MAX_VALUE))
+        )
     }
 
     private fun listScreen(): View {
@@ -263,6 +282,12 @@ class MainActivity : Activity() {
         val stats = tv("Jízd: ${trips.size}  ·  Celkem ${f1(km)} km  ·  Služebně ${f1(kmS)} km", 14f, ON_DARK)
         stats.gravity = Gravity.CENTER
         head.addView(stats, lp(MATCH, WRAP, 0f, 12))
+        val odo = odometer(year, month)
+        val odoText = if (odo == null) "Stav tachometru zadáte v nastavení."
+        else "Tachometr v měsíci: ${km0(odo[0])} → ${km0(odo[1])} km\nAktuální stav vozu: ${km0(odo[2])} km"
+        val odoView = tv(odoText, 14f, if (odo == null) ON_DARK else Color.WHITE, odo != null)
+        odoView.gravity = Gravity.CENTER
+        head.addView(odoView, lp(MATCH, WRAP, 0f, 8))
         page.addView(head)
 
         val ctl = card()
@@ -518,6 +543,7 @@ class MainActivity : Activity() {
         thrEdit?.text?.toString()?.toIntOrNull()?.let { prefs.threshold = it.coerceIn(0, 200) }
         minEdit?.text?.toString()?.toIntOrNull()?.let { prefs.minKm = it.coerceIn(0, 100) }
         stopEdit?.text?.toString()?.toIntOrNull()?.let { prefs.stopMin = it.coerceIn(1, 60) }
+        odoEdit?.let { prefs.odoStart = (it.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 9_999_999) }
     }
 
     private fun setMode(m: String) {
@@ -570,6 +596,17 @@ class MainActivity : Activity() {
         rules.addView(settingRow("Konec jízdy po stání", "Kratší zastávka jízdu nerozdělí", stop, "min"), lp(MATCH, WRAP, 0f, 12))
         body.addView(rules, lp(MATCH, WRAP, 0f, 8))
         body.addView(tv("Pro ručně spuštěné jízdy se tato pravidla nepoužijí.", 13f, MUTED), lp(MATCH, WRAP, 0f, 6))
+
+        body.addView(tv("Vozidlo", 14f, INK, true), lp(MATCH, WRAP, 0f, 18))
+        val car = card()
+        car.addView(tv("Počáteční stav tachometru (km)", 15f, INK, true))
+        car.addView(tv("Stav před první jízdou zaznamenanou v aplikaci. K němu se přičítají všechny uložené jízdy.", 13f, MUTED))
+        val odoField = numberField(prefs.odoStart)
+        if (prefs.odoStart == 0) odoField.setText("")
+        odoField.hint = "např. 84500"
+        odoEdit = odoField
+        car.addView(odoField, lp(MATCH, WRAP, 0f, 10))
+        body.addView(car, lp(MATCH, WRAP, 0f, 8))
 
         body.addView(tv("Oprávnění", 14f, INK, true), lp(MATCH, WRAP, 0f, 18))
         val perm = card()
@@ -632,7 +669,12 @@ class MainActivity : Activity() {
             if (out == null) { toast("Soubor se nepodařilo uložit."); return }
             out.use {
                 if (pendingExport == "csv") Export.csv(it, trips)
-                else Export.pdf(it, "Kniha jízd – " + MONTHS[month] + " " + year, trips)
+                else {
+                    val o = odometer(year, month)
+                    val odoTxt = if (o == null) null
+                    else "Tachometr: ${km0(o[0])} → ${km0(o[1])} km"
+                    Export.pdf(it, "Kniha jízd – " + MONTHS[month] + " " + year, trips, odoTxt)
+                }
             }
             toast("Soubor je uložen.")
         } catch (e: Exception) {

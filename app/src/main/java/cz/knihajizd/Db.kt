@@ -40,6 +40,10 @@ class Prefs(ctx: Context) {
     var minKm: Int
         get() = sp.getInt("minKm", 2)
         set(v) = sp.edit().putInt("minKm", v).apply()
+    /** Stav tachometru vozu (km) před první jízdou zaznamenanou v aplikaci. */
+    var odoStart: Int
+        get() = sp.getInt("odoStart", 0)
+        set(v) = sp.edit().putInt("odoStart", v).apply()
     var stopMin: Int
         get() = sp.getInt("stopMin", 5)
         set(v) = sp.edit().putInt("stopMin", v).apply()
@@ -90,6 +94,19 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
             arrayOf(from.toString(), to.toString())
         ).use { c -> while (c.moveToNext()) out.add(read(c)) }
         return out
+    }
+
+    /** Součet km všech jízd, které začaly před daným okamžikem. */
+    fun kmBefore(ts: Long): Double {
+        readableDatabase.rawQuery(
+            "SELECT COALESCE(SUM(dist_m), 0) FROM trips WHERE start_ts < ?", arrayOf(ts.toString())
+        ).use { c -> return if (c.moveToFirst()) c.getDouble(0) / 1000.0 else 0.0 }
+    }
+
+    fun monthStart(year: Int, month0: Int): Long {
+        val cal = Calendar.getInstance()
+        cal.clear(); cal.set(year, month0, 1, 0, 0, 0)
+        return cal.timeInMillis
     }
 
     fun get(id: Long): Trip? {
