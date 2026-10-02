@@ -375,6 +375,35 @@ class MainActivity : Activity() {
         return t
     }
 
+    /** Název startu nebo cíle; klepnutím ho lze ručně přepsat. */
+    private fun placeName(t: Trip, start: Boolean): TextView {
+        val v = tv(if (start) t.startPlace else t.endPlace, 16f, INK, true)
+        v.setPadding(0, dp(4), 0, dp(4))
+        v.isClickable = true
+        v.setOnClickListener {
+            val e = EditText(this)
+            e.setText(if (start) t.startPlace else t.endPlace)
+            e.setSelection(e.text.length)
+            val wrap = FrameLayout(this)
+            wrap.setPadding(dp(20), dp(8), dp(20), 0)
+            wrap.addView(e)
+            AlertDialog.Builder(this)
+                .setTitle(if (start) "Název místa startu" else "Název místa cíle")
+                .setView(wrap)
+                .setPositiveButton("Uložit") { _, _ ->
+                    val name = e.text.toString().trim()
+                    if (name.isNotEmpty()) {
+                        saveNote()
+                        if (start) db.setPlaces(t.id, name, t.endPlace) else db.setPlaces(t.id, t.startPlace, name)
+                        render()
+                    }
+                }
+                .setNegativeButton("Zrušit", null)
+                .show()
+        }
+        return v
+    }
+
     private fun saveNote() {
         val e = noteEdit ?: return
         db.setNote(detailId, e.text.toString().trim())
@@ -395,11 +424,12 @@ class MainActivity : Activity() {
         val body = vbox()
         val places = card()
         places.addView(tv("Start · " + timeFmt.format(Date(t.startTs)), 12f, MUTED))
-        places.addView(tv(t.startPlace, 16f, INK, true))
+        places.addView(placeName(t, true))
         places.addView(gpsLine(t.sLat, t.sLon, "Start"))
         places.addView(tv("Cíl · " + timeFmt.format(Date(t.endTs)), 12f, MUTED), lp(MATCH, WRAP, 0f, 12))
-        places.addView(tv(t.endPlace, 16f, INK, true))
+        places.addView(placeName(t, false))
         places.addView(gpsLine(t.eLat, t.eLon, "Cíl"))
+        places.addView(tv("Klepnutím na název místa ho můžete přepsat.", 12f, MUTED))
         if (Places.known(t.sLat, t.sLon) || Places.known(t.eLat, t.eLon)) {
             places.addView(
                 btn("Načíst názvy míst znovu", Color.WHITE, INK, LINE) {

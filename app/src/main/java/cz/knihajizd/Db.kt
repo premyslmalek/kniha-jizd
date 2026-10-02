@@ -122,6 +122,8 @@ object Places {
     // V české adrese stojí obec hned za PSČ: "Císařská 65, 798 07 Brodek u Prostějova, Česko".
     private val afterPsc = Regex("\\b\\d{3}\\s?\\d{2}\\s+([^,]+)")
 
+    private val houseNo = Regex("\\s+(č\\.\\s?p\\.\\s?)?\\d+[a-zA-Z]?(/\\d+[a-zA-Z]?)?$")
+
     fun known(lat: Double, lon: Double) = !(lat == 0.0 && lon == 0.0)
 
     fun coords(lat: Double, lon: Double): String =
@@ -144,7 +146,21 @@ object Places {
             if (town.isNullOrBlank()) town = list.firstNotNullOfOrNull { it.locality?.takeIf { s -> s.isNotBlank() } }
             if (town.isNullOrBlank()) town = list.firstNotNullOfOrNull { it.subLocality?.takeIf { s -> s.isNotBlank() } }
             if (town.isNullOrBlank()) town = list.firstNotNullOfOrNull { it.subAdminArea?.takeIf { s -> s.isNotBlank() } }
-            val street = list.firstOrNull()?.thoroughfare?.takeIf { it.isNotBlank() }
+            val first = list.firstOrNull()
+            val street = first?.thoroughfare?.takeIf { it.isNotBlank() }
+            if (street == null && first != null) {
+                // Vesnice bez názvů ulic: adresa začíná místní částí ("Sněhotice 12, 798 07 Brodek u Prostějova").
+                // Ta je přesnější než obec, pod kterou místní část spadá.
+                var part = first.subLocality?.takeIf { it.isNotBlank() }
+                if (part == null) {
+                    val seg = (first.getAddressLine(0) ?: "").substringBefore(",").trim()
+                    val name = seg.replace(houseNo, "").trim()
+                    if (name.isNotEmpty() && name[0].isLetter() && !name.contains("+") &&
+                        !name.startsWith("Unnamed", true) && afterPsc.find(seg) == null
+                    ) part = name
+                }
+                if (part != null) return part
+            }
             val parts = listOfNotNull(town?.takeIf { it.isNotBlank() }, street)
             if (parts.isNotEmpty()) return parts.joinToString(", ")
         } catch (_: Exception) {}
