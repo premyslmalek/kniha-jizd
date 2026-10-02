@@ -243,20 +243,50 @@ class MainActivity : Activity() {
 
     private fun km0(v: Long): String = String.format(cs, "%,d", v)
 
-    /**
-     * Stav tachometru: [na začátku měsíce, na konci měsíce, aktuální stav vozu].
-     * Počítá se z počátečního stavu v nastavení a součtu všech zaznamenaných jízd.
-     */
+    private fun ym(year: Int, month0: Int) = String.format(Locale.US, "%04d-%02d", year, month0 + 1)
+
+    private fun monthEnd(year: Int, month0: Int): Long =
+        if (month0 == 11) db.monthStart(year + 1, 0) else db.monthStart(year, month0 + 1)
+
+    /** Stav tachometru: [na začátku měsíce, na konci měsíce, aktuální stav vozu]. */
     private fun odometer(year: Int, month0: Int): LongArray? {
-        val start = prefs.odoStart
-        if (start <= 0) return null
-        val from = db.monthStart(year, month0)
-        val to = if (month0 == 11) db.monthStart(year + 1, 0) else db.monthStart(year, month0 + 1)
-        return longArrayOf(
-            Math.round(start + db.kmBefore(from)),
-            Math.round(start + db.kmBefore(to)),
-            Math.round(start + db.kmBefore(Long.MAX_VALUE))
-        )
+        val o = Odo(db, prefs.odoStart)
+        val a = o.state(db.monthStart(year, month0)) ?: return null
+        val b = o.state(monthEnd(year, month0)) ?: return null
+        val c = o.state(Long.MAX_VALUE) ?: return null
+        return longArrayOf(Math.round(a), Math.round(b), Math.round(c))
+    }
+
+    private fun signed(v: Long) = (if (v >= 0) "+" else "−") + km0(Math.abs(v))
+
+    /** Zadání skutečného stavu tachometru pro zobrazený měsíc; rozdíl proti záznamům se dorovná. */
+    private fun readingDialog(year: Int, month0: Int) {
+        val now = System.currentTimeMillis()
+        val to = monthEnd(year, month0)
+        if (db.monthStart(year, month0) > now) { toast("Tento měsíc ještě nezačal."); return }
+        val key = ym(year, month0)
+        val existing = Odo(db, prefs.odoStart).reading(key)
+        val e = numberField(existing?.km ?: 0)
+        if (existing == null) e.setText("")
+        e.hint = "stav tachometru v km"
+        val wrap = FrameLayout(this)
+        wrap.setPadding(dp(20), dp(8), dp(20), 0)
+        wrap.addView(e)
+        val b = AlertDialog.Builder(this)
+            .setTitle("Skutečný stav tachometru – " + MONTHS[month0] + " " + year)
+            .setMessage(
+                if (to <= now) "Zadejte stav tachometru na konci měsíce."
+                else "Zadejte aktuální stav tachometru. Další jízdy v tomto měsíci se k němu přičtou."
+            )
+            .setView(wrap)
+            .setPositiveButton("Uložit") { _, _ ->
+                val km = e.text.toString().trim().toIntOrNull()
+                if (km != null && km > 0) { db.setReading(key, km, minOf(now, to)); render() }
+                else toast("Stav nebyl uložen – zadejte číslo.")
+            }
+            .setNegativeButton("Zrušit", null)
+        if (existing != null) b.setNeutralButton("Smazat") { _, _ -> db.deleteReading(key); render() }
+        b.show()
     }
 
     private fun listScreen(): View {
@@ -283,11 +313,28 @@ class MainActivity : Activity() {
         stats.gravity = Gravity.CENTER
         head.addView(stats, lp(MATCH, WRAP, 0f, 12))
         val odo = odometer(year, month)
-        val odoText = if (odo == null) "Stav tachometru zadáte v nastavení."
+        val odoText = if (odo == null) "Počáteční stav tachometru zadáte v nastavení."
         else "Tachometr v měsíci: ${km0(odo[0])} → ${km0(odo[1])} km\nAktuální stav vozu: ${km0(odo[2])} km"
         val odoView = tv(odoText, 14f, if (odo == null) ON_DARK else Color.WHITE, odo != null)
         odoView.gravity = Gravity.CENTER
         head.addView(odoView, lp(MATCH, WRAP, 0f, 8))
+        val odoCalc = Odo(db, prefs.odoStart)
+        val reading = odoCalc.reading(ym(year, month))
+        if (reading != null) {
+            val adj = odoCalc.adjustment(ym(year, month))
+            val line = "Skutečný stav zadán: ${km0(reading.km.toLong())} km" +
+                (if (adj != null) " (dorovnání ${signed(adj)} km)" else "")
+            val rv = tv(line, 13f, ON_DARK)
+            rv.gravity = Gravity.CENTER
+            head.addView(rv, lp(MATCH, WRAP, 0f, 4))
+        }
+        val rb = tv(if (reading == null) "Zadat skutečný stav tachometru" else "Upravit skutečný stav tachometru", 14f, Color.WHITE, true)
+        rb.gravity = Gravity.CENTER
+        rb.background = bg(INK2, 12, MUTED)
+        rb.setPadding(dp(12), dp(12), dp(12), dp(12))
+        rb.isClickable = true
+        rb.setOnClickListener { readingDialog(year, month) }
+        head.addView(rb, lp(MATCH, WRAP, 0f, 10))
         page.addView(head)
 
         val ctl = card()
@@ -672,7 +719,11 @@ class MainActivity : Activity() {
                 else {
                     val o = odometer(year, month)
                     val odoTxt = if (o == null) null
-                    else "Tachometr: ${km0(o[0])} → ${km0(o[1])} km"
+                    else {
+                        val adj = Odo(db, prefs.odoStart).adjustment(ym(year, month))
+                        "Tachometr: ${km0(o[0])} → ${km0(o[1])} km" +
+                            (if (adj != null) " (dorovnání ${signed(adj)} km)" else "")
+                    }
                     Export.pdf(it, "Kniha jízd – " + MONTHS[month] + " " + year, trips, odoTxt)
                 }
             }

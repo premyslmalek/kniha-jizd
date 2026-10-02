@@ -29,6 +29,36 @@ data class Trip(
     val avgKmh: Double get() = if (endTs > startTs) distM / ((endTs - startTs) / 1000.0) * 3.6 else 0.0
 }
 
+class Reading(val ym: String, val km: Int, val ts: Long)
+
+/**
+ * Stav tachometru v čase. Vychází z posledního skutečného stavu zadaného uživatelem
+ * a přičítá jízdy zaznamenané po něm; bez zadaného stavu z počátečního stavu v nastavení.
+ */
+class Odo(private val db: Db, private val start: Int) {
+    private val rs = db.readings()
+
+    val available: Boolean get() = start > 0 || rs.isNotEmpty()
+
+    fun reading(ym: String): Reading? = rs.firstOrNull { it.ym == ym }
+
+    fun state(t: Long, exclude: String? = null): Double? {
+        val list = rs.filter { it.ym != exclude }
+        val r = list.lastOrNull { it.ts <= t }
+        if (r != null) return r.km + db.kmBetween(r.ts, t)
+        if (start > 0) return start + db.kmBefore(t)
+        val first = list.firstOrNull() ?: return null
+        return first.km - db.kmBetween(t, first.ts)
+    }
+
+    /** O kolik km se zadaný skutečný stav liší od stavu spočítaného ze zaznamenaných jízd. */
+    fun adjustment(ym: String): Long? {
+        val r = reading(ym) ?: return null
+        val computed = state(r.ts, ym) ?: return null
+        return Math.round(r.km - computed)
+    }
+}
+
 class Prefs(ctx: Context) {
     private val sp = ctx.getSharedPreferences("nastaveni", Context.MODE_PRIVATE)
     var mode: String
@@ -49,7 +79,7 @@ class Prefs(ctx: Context) {
         set(v) = sp.edit().putInt("stopMin", v).apply()
 }
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 1) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -57,9 +87,42 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
                 "start_lat REAL, start_lon REAL, end_lat REAL, end_lon REAL, start_place TEXT, end_place TEXT, " +
                 "dist_m REAL, status TEXT, manual INTEGER, note TEXT)"
         )
+        createReadings(db)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+    private fun createReadings(db: SQLiteDatabase) {
+        // Skutečný stav tachometru zadaný uživatelem: jeden záznam na měsíc (ym = "2026-10").
+        db.execSQL("CREATE TABLE IF NOT EXISTS odo(ym TEXT PRIMARY KEY, km INTEGER, ts INTEGER)")
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) createReadings(db)
+    }
+
+    fun readings(): List<Reading> {
+        val out = ArrayList<Reading>()
+        readableDatabase.rawQuery("SELECT ym, km, ts FROM odo ORDER BY ts", null).use { c ->
+            while (c.moveToNext()) out.add(Reading(c.getString(0), c.getInt(1), c.getLong(2)))
+        }
+        return out
+    }
+
+    fun setReading(ym: String, km: Int, ts: Long) {
+        val v = ContentValues(); v.put("ym", ym); v.put("km", km); v.put("ts", ts)
+        writableDatabase.insertWithOnConflict("odo", null, v, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun deleteReading(ym: String) {
+        writableDatabase.delete("odo", "ym = ?", arrayOf(ym))
+    }
+
+    /** Součet km jízd, které začaly v intervalu <from, to). */
+    fun kmBetween(from: Long, to: Long): Double {
+        readableDatabase.rawQuery(
+            "SELECT COALESCE(SUM(dist_m), 0) FROM trips WHERE start_ts >= ? AND start_ts < ?",
+            arrayOf(from.toString(), to.toString())
+        ).use { c -> return if (c.moveToFirst()) c.getDouble(0) / 1000.0 else 0.0 }
+    }
 
     fun insert(
         startTs: Long, endTs: Long, sLat: Double, sLon: Double, eLat: Double, eLon: Double,
