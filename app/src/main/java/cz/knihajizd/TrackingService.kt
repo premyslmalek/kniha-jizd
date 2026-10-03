@@ -45,9 +45,10 @@ class TrackingService : Service(), LocationListener {
         @Volatile var tripDistM = 0.0
         var onChange: (() -> Unit)? = null
 
-        fun send(ctx: Context, action: String, status: String? = null) {
+        fun send(ctx: Context, action: String, status: String? = null, vehicleId: Long = 0L) {
             val i = Intent(ctx, TrackingService::class.java).setAction(action)
             if (status != null) i.putExtra("status", status)
+            if (vehicleId != 0L) i.putExtra("vehicle", vehicleId)
             ctx.startForegroundService(i)
         }
     }
@@ -70,6 +71,7 @@ class TrackingService : Service(), LocationListener {
     private var lastMoveTs = 0L
     private var dist = 0.0
     private var status = "S"
+    private var vehicleId = 1L
 
     private val tick = object : Runnable {
         override fun run() {
@@ -113,6 +115,7 @@ class TrackingService : Service(), LocationListener {
             }
             ACTION_MANUAL_START -> if (!tripActive) {
                 status = intent?.getStringExtra("status") ?: "S"
+                vehicleId = intent?.getLongExtra("vehicle", prefs.defaultVehicle) ?: prefs.defaultVehicle
                 begin(true, System.currentTimeMillis(), null)
             }
             ACTION_MANUAL_STOP -> if (tripActive) finishTrip()
@@ -212,6 +215,8 @@ class TrackingService : Service(), LocationListener {
                 candidate++
                 if (candidate >= 3) {
                     status = "S"
+                    // automaticky zaznamenaná jízda se zapíše na výchozí vozidlo
+                    vehicleId = prefs.defaultVehicle
                     begin(false, candTs, candLoc)
                 }
             } else {
@@ -249,6 +254,7 @@ class TrackingService : Service(), LocationListener {
         val d = dist
         val sTs = startTs
         val st = status
+        val vid = vehicleId
 
         tripActive = false
         tripManual = false
@@ -266,7 +272,7 @@ class TrackingService : Service(), LocationListener {
                 val ep = place(e)
                 db.insert(
                     sTs, endTs, s?.latitude ?: 0.0, s?.longitude ?: 0.0, e?.latitude ?: 0.0, e?.longitude ?: 0.0,
-                    sp, ep, d, st, manual
+                    sp, ep, d, st, manual, vid
                 )
                 notifyUi()
             }

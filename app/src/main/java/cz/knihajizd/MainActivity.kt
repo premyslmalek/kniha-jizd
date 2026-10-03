@@ -81,6 +81,9 @@ class MainActivity : Activity() {
     private var fuelDraft = Fuel(0, 0, "", 0.0, 0.0, 0.0)
     private var fuelMsg = ""
     private var cameraUri: Uri? = null
+    /** Vozidlo, pro které se zobrazují přehledy (0 = všechna), a vozidlo předvolené pro ručně spuštěnou jízdu. */
+    private var viewVehicle = 0L
+    private var manualVehicle = 0L
     private var dashYearly = false
     private var dashYear = Calendar.getInstance().get(Calendar.YEAR)
 
@@ -102,6 +105,10 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         db = Db(this)
         prefs = Prefs(this)
+        if (db.vehicle(prefs.defaultVehicle) == null) prefs.defaultVehicle = db.vehicles().firstOrNull()?.id ?: 1L
+        viewVehicle = prefs.defaultVehicle
+        manualVehicle = prefs.defaultVehicle
+        db.vehicleFilter = viewVehicle
         savedInstanceState?.getString("cameraUri")?.let { cameraUri = Uri.parse(it) }
         cal.set(Calendar.DAY_OF_MONTH, 1)
         root = FrameLayout(this)
@@ -277,9 +284,88 @@ class MainActivity : Activity() {
     private fun monthEnd(year: Int, month0: Int): Long =
         if (month0 == 11) db.monthStart(year + 1, 0) else db.monthStart(year, month0 + 1)
 
+    // ---------- vozidla ----------
+
+    private fun vehLabel(id: Long): String =
+        if (id == 0L) "Všechna vozidla" else db.vehicle(id)?.label ?: "Neznámé vozidlo"
+
+    private fun vehShort(id: Long): String = db.vehicle(id)?.short ?: ""
+
+    private fun curOdo(): Odo? = db.vehicle(viewVehicle)?.let { Odo(db, it) }
+
+    private fun setViewVehicle(id: Long) {
+        viewVehicle = id
+        db.vehicleFilter = id
+    }
+
+    /** Výběr vozidla ze seznamu; s volbou "Všechna vozidla", pokud to dává smysl. */
+    private fun vehicleDialog(includeAll: Boolean, onPick: (Long) -> Unit) {
+        val list = db.vehicles()
+        val ids = (if (includeAll) listOf(0L) else emptyList()) + list.map { it.id }
+        val names = ids.map { id ->
+            vehLabel(id) + (if (id != 0L && id == prefs.defaultVehicle) "  (výchozí)" else "")
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Vozidlo")
+            .setItems(names) { _, which -> onPick(ids[which]) }
+            .show()
+    }
+
+    /** Tlačítko s názvem vozidla, které otevře výběr. */
+    private fun vehicleButton(prefix: String, id: Long, dark: Boolean, includeAll: Boolean, onPick: (Long) -> Unit): TextView {
+        val b = tv(prefix + vehLabel(id) + "  ▾", 14f, if (dark) Color.WHITE else INK, true)
+        b.gravity = Gravity.CENTER
+        b.background = bg(if (dark) INK2 else Color.WHITE, 12, if (dark) MUTED else LINE)
+        b.setPadding(dp(12), dp(12), dp(12), dp(12))
+        b.isClickable = true
+        b.setOnClickListener { vehicleDialog(includeAll, onPick) }
+        return b
+    }
+
+    /** Založení nebo úprava vozidla. */
+    private fun vehicleEditDialog(v: Vehicle?) {
+        val name = field(v?.name ?: "", "název, např. Škoda Octavia", null)
+        val plate = field(v?.plate ?: "", "SPZ, např. 5M2 4871", null)
+        val odo = field(if (v != null && v.odoStart > 0) v.odoStart.toString() else "", "počáteční stav tachometru v km", "0123456789")
+        val wrap = vbox()
+        wrap.setPadding(dp(20), dp(8), dp(20), 0)
+        wrap.addView(name)
+        wrap.addView(plate, lp(MATCH, WRAP, 0f, 8))
+        wrap.addView(odo, lp(MATCH, WRAP, 0f, 8))
+        wrap.addView(tv("Počáteční stav je stav tachometru před první jízdou tohoto vozu zaznamenanou v aplikaci.", 12f, MUTED), lp(MATCH, WRAP, 0f, 6))
+        val b = AlertDialog.Builder(this)
+            .setTitle(if (v == null) "Nové vozidlo" else "Úprava vozidla")
+            .setView(wrap)
+            .setPositiveButton("Uložit") { _, _ ->
+                val n = name.text.toString().trim()
+                if (n.isEmpty()) toast("Vozidlo nebylo uloženo – zadejte název.")
+                else {
+                    db.vehicleSave(
+                        Vehicle(v?.id ?: 0L, n, plate.text.toString().trim().uppercase(), odo.text.toString().trim().toIntOrNull() ?: 0)
+                    )
+                    saveSettings(); render()
+                }
+            }
+            .setNegativeButton("Zrušit", null)
+        if (v != null) b.setNeutralButton("Smazat") { _, _ ->
+            when {
+                db.vehicles().size <= 1 -> toast("Poslední vozidlo smazat nelze.")
+                v.id == prefs.defaultVehicle -> toast("Výchozí vozidlo smazat nelze. Nejdřív nastavte jako výchozí jiné.")
+                db.vehicleUsed(v.id) -> toast("Vozidlo má zapsané jízdy nebo účtenky, proto ho smazat nelze.")
+                else -> {
+                    db.vehicleDelete(v.id)
+                    if (viewVehicle == v.id) setViewVehicle(prefs.defaultVehicle)
+                    if (manualVehicle == v.id) manualVehicle = prefs.defaultVehicle
+                    saveSettings(); render()
+                }
+            }
+        }
+        b.show()
+    }
+
     /** Stav tachometru: [na začátku měsíce, na konci měsíce, aktuální stav vozu]. */
     private fun odometer(year: Int, month0: Int): LongArray? {
-        val o = Odo(db, prefs.odoStart)
+        val o = curOdo() ?: return null
         val a = o.state(db.monthStart(year, month0)) ?: return null
         val b = o.state(monthEnd(year, month0)) ?: return null
         val c = o.state(Long.MAX_VALUE) ?: return null
@@ -290,11 +376,13 @@ class MainActivity : Activity() {
 
     /** Zadání skutečného stavu tachometru pro zobrazený měsíc; rozdíl proti záznamům se dorovná. */
     private fun readingDialog(year: Int, month0: Int) {
+        if (viewVehicle == 0L) { toast("Nejdřív vyberte jedno vozidlo."); return }
+        val vid = viewVehicle
         val now = System.currentTimeMillis()
         val to = monthEnd(year, month0)
         if (db.monthStart(year, month0) > now) { toast("Tento měsíc ještě nezačal."); return }
         val key = ym(year, month0)
-        val existing = Odo(db, prefs.odoStart).reading(key)
+        val existing = curOdo()?.reading(key)
         val e = numberField(existing?.km ?: 0)
         if (existing == null) e.setText("")
         e.hint = "stav tachometru v km"
@@ -302,7 +390,7 @@ class MainActivity : Activity() {
         wrap.setPadding(dp(20), dp(8), dp(20), 0)
         wrap.addView(e)
         val b = AlertDialog.Builder(this)
-            .setTitle("Skutečný stav tachometru – " + MONTHS[month0] + " " + year)
+            .setTitle("Skutečný stav tachometru – " + vehShort(vid) + ", " + MONTHS[month0] + " " + year)
             .setMessage(
                 if (to <= now) "Zadejte stav tachometru na konci měsíce."
                 else "Zadejte aktuální stav tachometru. Další jízdy v tomto měsíci se k němu přičtou."
@@ -310,11 +398,11 @@ class MainActivity : Activity() {
             .setView(wrap)
             .setPositiveButton("Uložit") { _, _ ->
                 val km = e.text.toString().trim().toIntOrNull()
-                if (km != null && km > 0) { db.setReading(key, km, minOf(now, to)); render() }
+                if (km != null && km > 0) { db.setReading(vid, key, km, minOf(now, to)); render() }
                 else toast("Stav nebyl uložen – zadejte číslo.")
             }
             .setNegativeButton("Zrušit", null)
-        if (existing != null) b.setNeutralButton("Smazat") { _, _ -> db.deleteReading(key); render() }
+        if (existing != null) b.setNeutralButton("Smazat") { _, _ -> db.deleteReading(vid, key); render() }
         b.show()
     }
 
@@ -340,6 +428,10 @@ class MainActivity : Activity() {
         nav.addView(title, lp(0, WRAP, 1f))
         nav.addView(btn("›", INK2, Color.WHITE) { cal.add(Calendar.MONTH, 1); render() }, lp(dp(56), WRAP))
         top.addView(nav)
+        top.addView(
+            vehicleButton("", viewVehicle, true, true) { setViewVehicle(it); render() },
+            lp(MATCH, WRAP, 0f, 8)
+        )
         page.addView(top)
         val km = trips.sumOf { it.km }
         val kmS = trips.filter { it.status == "S" }.sumOf { it.km }
@@ -347,13 +439,14 @@ class MainActivity : Activity() {
         stats.gravity = Gravity.CENTER
         head.addView(stats, lp(MATCH, WRAP, 0f, 4))
         val odo = odometer(year, month)
-        val odoText = if (odo == null) "Počáteční stav tachometru zadáte v nastavení."
+        val odoText = if (viewVehicle == 0L) "Tachometr se zobrazuje po výběru jednoho vozidla."
+        else if (odo == null) "Počáteční stav tachometru zadáte u vozidla v nastavení."
         else "Tachometr v měsíci: ${km0(odo[0])} → ${km0(odo[1])} km\nAktuální stav vozu: ${km0(odo[2])} km"
         val odoView = tv(odoText, 14f, if (odo == null) ON_DARK else Color.WHITE, odo != null)
         odoView.gravity = Gravity.CENTER
         head.addView(odoView, lp(MATCH, WRAP, 0f, 8))
-        val odoCalc = Odo(db, prefs.odoStart)
-        val reading = odoCalc.reading(ym(year, month))
+        val odoCalc = curOdo()
+        val reading = odoCalc?.reading(ym(year, month))
         if (reading != null) {
             val adj = odoCalc.adjustment(ym(year, month))
             val line = "Skutečný stav zadán: ${km0(reading.km.toLong())} km" +
@@ -368,7 +461,7 @@ class MainActivity : Activity() {
         rb.setPadding(dp(12), dp(12), dp(12), dp(12))
         rb.isClickable = true
         rb.setOnClickListener { readingDialog(year, month) }
-        head.addView(rb, lp(MATCH, WRAP, 0f, 10))
+        if (viewVehicle != 0L) head.addView(rb, lp(MATCH, WRAP, 0f, 10))
         val fuelView = tv(fuelSummary(db.fuelMonth(year, month)), 14f, Color.WHITE, true)
         fuelView.gravity = Gravity.CENTER
         head.addView(fuelView, lp(MATCH, WRAP, 0f, 10))
@@ -389,10 +482,16 @@ class MainActivity : Activity() {
             row.addView(statusBtn("Služební", "S", manualStatus) { pick("S") }, lp(0, WRAP, 1f))
             row.addView(statusBtn("Soukromá", "P", manualStatus) { pick("P") }, lp(0, WRAP, 1f, 0, 8))
             ctl.addView(row)
+            if (db.vehicle(manualVehicle) == null) manualVehicle = prefs.defaultVehicle
+            if (active) ctl.addView(tv("Vůz: " + vehLabel(manualVehicle), 14f, MUTED), lp(MATCH, WRAP, 0f, 10))
+            else ctl.addView(
+                vehicleButton("Vůz: ", manualVehicle, false, false) { manualVehicle = it; render() },
+                lp(MATCH, WRAP, 0f, 10)
+            )
             ctl.addView(
                 btn(if (active) "Ukončit jízdu" else "Zahájit jízdu", if (active) RED else GREEN, Color.WHITE) {
                     if (TrackingService.tripActive) TrackingService.send(this, TrackingService.ACTION_MANUAL_STOP)
-                    else TrackingService.send(this, TrackingService.ACTION_MANUAL_START, manualStatus)
+                    else TrackingService.send(this, TrackingService.ACTION_MANUAL_START, manualStatus, manualVehicle)
                 }, lp(MATCH, WRAP, 0f, 10)
             )
             val sv = tv(statusText(), 13f, MUTED)
@@ -455,7 +554,7 @@ class MainActivity : Activity() {
         val top = hbox()
         top.gravity = Gravity.CENTER_VERTICAL
         top.addView(
-            tv(timeFmt.format(Date(t.startTs)) + " – " + timeFmt.format(Date(t.endTs)), 13f, MUTED),
+            tv(timeFmt.format(Date(t.startTs)) + " – " + timeFmt.format(Date(t.endTs)) + "  ·  " + vehShort(t.vehicleId), 13f, MUTED),
             lp(0, WRAP, 1f)
         )
         top.addView(chip(t.status))
@@ -578,6 +677,12 @@ class MainActivity : Activity() {
         )
         body.addView(stats, lp(MATCH, WRAP, 0f, 10))
 
+        body.addView(tv("Vozidlo", 14f, INK, true), lp(MATCH, WRAP, 0f, 16))
+        body.addView(
+            vehicleButton("", t.vehicleId, false, false) { saveNote(); db.setTripVehicle(t.id, it); render() },
+            lp(MATCH, WRAP, 0f, 8)
+        )
+
         body.addView(tv("Status jízdy", 14f, INK, true), lp(MATCH, WRAP, 0f, 16))
         val row = hbox()
         val pick = { code: String -> saveNote(); db.setStatus(t.id, code); render() }
@@ -640,7 +745,6 @@ class MainActivity : Activity() {
         thrEdit?.text?.toString()?.toIntOrNull()?.let { prefs.threshold = it.coerceIn(0, 200) }
         minEdit?.text?.toString()?.toIntOrNull()?.let { prefs.minKm = it.coerceIn(0, 100) }
         stopEdit?.text?.toString()?.toIntOrNull()?.let { prefs.stopMin = it.coerceIn(1, 60) }
-        odoEdit?.let { prefs.odoStart = (it.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 9_999_999) }
     }
 
     private fun setMode(m: String) {
@@ -694,16 +798,30 @@ class MainActivity : Activity() {
         body.addView(rules, lp(MATCH, WRAP, 0f, 8))
         body.addView(tv("Pro ručně spuštěné jízdy se tato pravidla nepoužijí.", 13f, MUTED), lp(MATCH, WRAP, 0f, 6))
 
-        body.addView(tv("Vozidlo", 14f, INK, true), lp(MATCH, WRAP, 0f, 18))
-        val car = card()
-        car.addView(tv("Počáteční stav tachometru (km)", 15f, INK, true))
-        car.addView(tv("Stav před první jízdou zaznamenanou v aplikaci. K němu se přičítají všechny uložené jízdy.", 13f, MUTED))
-        val odoField = numberField(prefs.odoStart)
-        if (prefs.odoStart == 0) odoField.setText("")
-        odoField.hint = "např. 84500"
-        odoEdit = odoField
-        car.addView(odoField, lp(MATCH, WRAP, 0f, 10))
-        body.addView(car, lp(MATCH, WRAP, 0f, 8))
+        body.addView(tv("Vozidla", 14f, INK, true), lp(MATCH, WRAP, 0f, 18))
+        for (v in db.vehicles()) {
+            val isDef = v.id == prefs.defaultVehicle
+            val c = card()
+            c.addView(tv(v.label + (if (isDef) "  ·  výchozí" else ""), 16f, INK, true))
+            c.addView(
+                tv(if (v.odoStart > 0) "Počáteční stav tachometru: " + km0(v.odoStart.toLong()) + " km" else "Počáteční stav tachometru není zadán", 13f, MUTED),
+                lp(MATCH, WRAP, 0f, 2)
+            )
+            val acts = hbox()
+            acts.addView(btn("Upravit", Color.WHITE, INK, LINE) { vehicleEditDialog(v) }, lp(0, WRAP, 1f))
+            if (!isDef) acts.addView(
+                btn("Nastavit výchozí", Color.WHITE, BLUE, LINE) {
+                    saveSettings(); prefs.defaultVehicle = v.id; manualVehicle = v.id; render()
+                }, lp(0, WRAP, 1.4f, 0, 8)
+            )
+            c.addView(acts, lp(MATCH, WRAP, 0f, 10))
+            body.addView(c, lp(MATCH, WRAP, 0f, 8))
+        }
+        body.addView(btn("+ Přidat vozidlo", Color.WHITE, INK, LINE) { vehicleEditDialog(null) }, lp(MATCH, WRAP, 0f, 8))
+        body.addView(
+            tv("Na výchozí vozidlo se zapisují automaticky zaznamenané jízdy. U každé jízdy lze vozidlo změnit i zpětně.", 13f, MUTED),
+            lp(MATCH, WRAP, 0f, 6)
+        )
 
         body.addView(tv("Oprávnění", 14f, INK, true), lp(MATCH, WRAP, 0f, 18))
         val perm = card()
@@ -746,7 +864,8 @@ class MainActivity : Activity() {
         }
         toggle.addView(tBtn("Po měsících", !dashYearly) { dashYearly = false; render() }, lp(0, WRAP, 1f))
         toggle.addView(tBtn("Po letech", dashYearly) { dashYearly = true; render() }, lp(0, WRAP, 1f, 0, 8))
-        body.addView(toggle, lp(MATCH, WRAP, 0f, 14))
+        body.addView(vehicleButton("", viewVehicle, false, true) { setViewVehicle(it); render() }, lp(MATCH, WRAP, 0f, 14))
+        body.addView(toggle, lp(MATCH, WRAP, 0f, 10))
 
         val labels: List<String>
         val trips: List<Trip>
@@ -876,6 +995,16 @@ class MainActivity : Activity() {
         body.addView(tv("Ujeté km", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
         body.addView(km, lp(MATCH, WRAP, 0f, 6))
 
+        body.addView(tv("Vozidlo", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        var vid = if (viewVehicle != 0L) viewVehicle else prefs.defaultVehicle
+        val vBtn = tv(vehLabel(vid) + "  ▾", 15f, INK, true)
+        vBtn.background = bg(Color.WHITE, 12, LINE)
+        vBtn.setPadding(dp(12), dp(12), dp(12), dp(12))
+        vBtn.isClickable = true
+        // výběr bez překreslení obrazovky, aby se neztratily rozepsané údaje
+        vBtn.setOnClickListener { vehicleDialog(false) { vid = it; vBtn.text = vehLabel(it) + "  ▾" } }
+        body.addView(vBtn, lp(MATCH, WRAP, 0f, 6))
+
         body.addView(tv("Status jízdy", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
         var status = "S"
         val bS = btn("Služební", Color.WHITE, MUTED, LINE) {}
@@ -916,7 +1045,7 @@ class MainActivity : Activity() {
                 else if (sp.isEmpty() || ep.isEmpty()) toast("Vyplňte start a cíl.")
                 else if (dist <= 0.0) toast("Vyplňte ujeté kilometry.")
                 else {
-                    val id = db.insert(a.time, b.time, 0.0, 0.0, 0.0, 0.0, sp, ep, dist * 1000.0, status, true)
+                    val id = db.insert(a.time, b.time, 0.0, 0.0, 0.0, 0.0, sp, ep, dist * 1000.0, status, true, vid)
                     val n = note.text.toString().trim()
                     if (n.isNotEmpty()) db.setNote(id, n)
                     // přehled se přepne na měsíc uložené jízdy
@@ -955,6 +1084,7 @@ class MainActivity : Activity() {
         page.addView(topBar("Účtenky – " + MONTHS[month] + " " + year))
 
         val body = vbox()
+        body.addView(vehicleButton("", viewVehicle, false, true) { setViewVehicle(it); render() }, lp(MATCH, WRAP, 0f, 14))
         val sum = card()
         sum.addView(tv(fuelSummary(items), 15f, INK, true))
         sum.addView(
@@ -979,7 +1109,7 @@ class MainActivity : Activity() {
                 tv(String.format(cs, "%.2f", f.liters) + " l  ·  " + money(f.priceVat) + " Kč vč. DPH", 15f),
                 lp(MATCH, WRAP, 0f, 6)
             )
-            c.addView(tv(money(f.priceNoVat) + " Kč bez DPH" + (if (f.photo.isNotEmpty()) "  ·  s fotkou" else "  ·  bez fotky"), 13f, MUTED), lp(MATCH, WRAP, 0f, 2))
+            c.addView(tv(money(f.priceNoVat) + " Kč bez DPH" + (if (f.photo.isNotEmpty()) "  ·  s fotkou" else "  ·  bez fotky") + "  ·  " + vehShort(f.vehicleId), 13f, MUTED), lp(MATCH, WRAP, 0f, 2))
             c.isClickable = true
             c.setOnClickListener { fuelDraft = f; fuelMsg = ""; screen = "fuelEdit"; render() }
             body.addView(c, lp(MATCH, WRAP, 0f, 8))
@@ -1157,6 +1287,7 @@ class MainActivity : Activity() {
             m.setPadding(dp(12), dp(10), dp(12), dp(10))
             body.addView(m, lp(MATCH, WRAP, 0f, 14))
         }
+        var fVid = if (f.vehicleId != 0L) f.vehicleId else if (viewVehicle != 0L) viewVehicle else prefs.defaultVehicle
         val pv0 = photoView(f.photo)
         if (pv0 != null) {
             body.addView(pv0, lp(MATCH, WRAP, 0f, 14))
@@ -1168,7 +1299,14 @@ class MainActivity : Activity() {
         val vat = field(dec(f.priceVat), "např. 1560,00", "0123456789,.")
         val noVat = field(dec(f.priceNoVat), "např. 1289,26", "0123456789,.")
 
-        body.addView(tv("Datum", 14f, INK, true), lp(MATCH, WRAP, 0f, 14))
+        body.addView(tv("Vozidlo", 14f, INK, true), lp(MATCH, WRAP, 0f, 14))
+        val fvBtn = tv(vehLabel(fVid) + "  ▾", 15f, INK, true)
+        fvBtn.background = bg(Color.WHITE, 12, LINE)
+        fvBtn.setPadding(dp(12), dp(12), dp(12), dp(12))
+        fvBtn.isClickable = true
+        fvBtn.setOnClickListener { vehicleDialog(false) { fVid = it; fvBtn.text = vehLabel(it) + "  ▾" } }
+        body.addView(fvBtn, lp(MATCH, WRAP, 0f, 6))
+        body.addView(tv("Datum", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
         body.addView(date, lp(MATCH, WRAP, 0f, 6))
         body.addView(tv("Čerpací stanice", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
         body.addView(station, lp(MATCH, WRAP, 0f, 6))
@@ -1199,7 +1337,7 @@ class MainActivity : Activity() {
                     val c = Calendar.getInstance()
                     c.time = d
                     c.set(Calendar.HOUR_OF_DAY, 12)
-                    db.fuelSave(Fuel(f.id, c.timeInMillis, station.text.toString().trim(), l, pv, num(noVat), f.photo))
+                    db.fuelSave(Fuel(f.id, c.timeInMillis, station.text.toString().trim(), l, pv, num(noVat), f.photo, fVid))
                     // přehled účtenek se přepne na měsíc uložené účtenky
                     cal.set(Calendar.YEAR, c.get(Calendar.YEAR))
                     cal.set(Calendar.MONTH, c.get(Calendar.MONTH))
@@ -1267,6 +1405,8 @@ class MainActivity : Activity() {
         val year = cal.get(Calendar.YEAR)
         val month = cal.get(Calendar.MONTH)
         val trips = db.month(year, month)
+        Export.plates = db.vehicles().associate { it.id to it.short }
+        val scope = if (viewVehicle == 0L) "všechna vozidla" else vehLabel(viewVehicle)
         try {
             val out = contentResolver.openOutputStream(uri)
             if (out == null) { toast("Soubor se nepodařilo uložit."); return }
@@ -1276,13 +1416,13 @@ class MainActivity : Activity() {
                     val o = odometer(year, month)
                     val odoTxt = if (o == null) null
                     else {
-                        val adj = Odo(db, prefs.odoStart).adjustment(ym(year, month))
+                        val adj = curOdo()?.adjustment(ym(year, month))
                         "Tachometr: ${km0(o[0])} → ${km0(o[1])} km" +
                             (if (adj != null) " (dorovnání ${signed(adj)} km)" else "")
                     }
                     val fuel = db.fuelMonth(year, month)
                     val extra = listOfNotNull(odoTxt, fuelSummary(fuel) + "  ·  " + money(fuel.sumOf { f -> f.priceNoVat }) + " Kč bez DPH")
-                    Export.pdf(it, "Kniha jízd – " + MONTHS[month] + " " + year, trips, fuel, extra)
+                    Export.pdf(it, "Kniha jízd – " + MONTHS[month] + " " + year + " – " + scope, trips, fuel, extra)
                 }
             }
             toast("Soubor je uložen.")

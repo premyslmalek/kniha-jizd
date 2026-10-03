@@ -16,6 +16,9 @@ import java.util.Locale
 object Export {
     private val cs = Locale("cs", "CZ")
 
+    /** Označení vozidel (SPZ nebo název) podle id; nastavuje se před exportem. */
+    var plates: Map<Long, String> = emptyMap()
+
     fun statusName(s: String) = when (s) {
         "S" -> "Služební"
         "P" -> "Soukromá"
@@ -47,19 +50,19 @@ object Export {
         val h = SimpleDateFormat("HH:mm", cs)
         val sb = StringBuilder("\uFEFF")
         sb.append(
-            "Datum;Typ;Začátek;Konec;Start;Start GPS;Cíl;Cíl GPS;Km;Průměrná rychlost (km/h);Doba (min);Status;Záznam;Poznámka;" +
+            "Datum;Vozidlo;Typ;Začátek;Konec;Start;Start GPS;Cíl;Cíl GPS;Km;Průměrná rychlost (km/h);Doba (min);Status;Záznam;Poznámka;" +
                 "Čerpací stanice;Litry;Cena vč. DPH;Cena bez DPH\r\n"
         )
         for ((_, item) in merged(trips, fuel)) {
             val row = if (item is Trip) listOf(
-                d.format(Date(item.startTs)), "Jízda", h.format(Date(item.startTs)), h.format(Date(item.endTs)),
+                d.format(Date(item.startTs)), plates[item.vehicleId] ?: "", "Jízda", h.format(Date(item.startTs)), h.format(Date(item.endTs)),
                 item.startPlace, Places.coords(item.sLat, item.sLon), item.endPlace, Places.coords(item.eLat, item.eLon),
                 f1(item.km), Math.round(item.avgKmh).toString(), item.minutes.toString(),
                 statusName(item.status), if (item.manual) "ručně" else "automaticky", item.note, "", "", "", ""
             ) else {
                 val f = item as Fuel
                 listOf(
-                    d.format(Date(f.ts)), "Tankování", "", "", "", "", "", "", "", "", "", "", "", "",
+                    d.format(Date(f.ts)), plates[f.vehicleId] ?: "", "Tankování", "", "", "", "", "", "", "", "", "", "", "", "",
                     f.station, money(f.liters), money(f.priceVat), money(f.priceNoVat)
                 )
             }
@@ -72,8 +75,8 @@ object Export {
     private const val H = 595
     private const val M = 32f
     private val cols = listOf(
-        "Datum" to 58f, "Čas" to 70f, "Start" to 120f, "Start GPS" to 90f, "Cíl" to 120f, "Cíl GPS" to 90f,
-        "Km" to 42f, "Ø km/h" to 42f, "Min" to 34f, "Status" to 58f, "Poznámka" to 54f
+        "Datum" to 58f, "Čas" to 70f, "Start" to 110f, "Start GPS" to 85f, "Cíl" to 110f, "Cíl GPS" to 85f,
+        "Km" to 42f, "Ø km/h" to 42f, "Min" to 34f, "Status" to 58f, "Vůz, poznámka" to 84f
     )
 
     private fun row(c: Canvas, y: Float, values: List<String>, paint: TextPaint) {
@@ -131,7 +134,8 @@ object Export {
                     page.canvas, y, listOf(
                         d.format(Date(item.startTs)), h.format(Date(item.startTs)) + "–" + h.format(Date(item.endTs)),
                         item.startPlace, Places.coords(item.sLat, item.sLon), item.endPlace, Places.coords(item.eLat, item.eLon),
-                        f1(item.km), Math.round(item.avgKmh).toString(), item.minutes.toString(), statusName(item.status), item.note
+                        f1(item.km), Math.round(item.avgKmh).toString(), item.minutes.toString(), statusName(item.status),
+                        listOf(plates[item.vehicleId] ?: "", item.note).filter { it.isNotBlank() }.joinToString(" · ")
                     ), p
                 )
             } else {
@@ -139,7 +143,7 @@ object Export {
                 // Tankování: jeden tučný řádek přes šířku tabulky pod jízdami daného dne.
                 page.canvas.drawText(d.format(Date(f.ts)), M, y, bold)
                 page.canvas.drawText(
-                    "Tankování: " + f.station.ifBlank { "neuvedeno" } + "   " + money(f.liters) + " l   " +
+                    "Tankování" + (plates[f.vehicleId]?.let { " ($it)" } ?: "") + ": " + f.station.ifBlank { "neuvedeno" } + "   " + money(f.liters) + " l   " +
                         money(f.priceVat) + " Kč vč. DPH   " + money(f.priceNoVat) + " Kč bez DPH",
                     M + cols[0].second, y, bold
                 )
