@@ -9,6 +9,7 @@ import android.text.TextPaint
 import android.text.TextUtils
 import java.io.OutputStream
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -25,19 +26,43 @@ object Export {
 
     private fun q(s: String) = "\"" + s.replace("\"", "\"\"") + "\""
 
+    private fun money(v: Double): String = String.format(cs, "%.2f", v)
+
+    /** Konec dne, do kterého tankování patří – v exportu se řadí za jízdy téhož dne. */
+    private fun dayEnd(ts: Long): Long {
+        val c = Calendar.getInstance()
+        c.timeInMillis = ts
+        c.set(Calendar.HOUR_OF_DAY, 23); c.set(Calendar.MINUTE, 59); c.set(Calendar.SECOND, 59)
+        return c.timeInMillis
+    }
+
+    /** Jízdy a tankování v jednom časovém sledu: (klíč řazení, jízda nebo účtenka). */
+    private fun merged(trips: List<Trip>, fuel: List<Fuel>): List<Pair<Long, Any>> =
+        (trips.map { Pair<Long, Any>(it.startTs, it) } + fuel.map { Pair<Long, Any>(dayEnd(it.ts), it) })
+            .sortedBy { it.first }
+
     /** CSV se středníky a v kódování, které Excel otevře správně i s češtinou. */
-    fun csv(out: OutputStream, trips: List<Trip>) {
+    fun csv(out: OutputStream, trips: List<Trip>, fuel: List<Fuel>) {
         val d = SimpleDateFormat("d.M.yyyy", cs)
         val h = SimpleDateFormat("HH:mm", cs)
-        val sb = StringBuilder("﻿")
-        sb.append("Datum;Začátek;Konec;Start;Start GPS;Cíl;Cíl GPS;Km;Průměrná rychlost (km/h);Doba (min);Status;Záznam;Poznámka\r\n")
-        for (t in trips.sortedBy { it.startTs }) {
-            val row = listOf(
-                d.format(Date(t.startTs)), h.format(Date(t.startTs)), h.format(Date(t.endTs)),
-                t.startPlace, Places.coords(t.sLat, t.sLon), t.endPlace, Places.coords(t.eLat, t.eLon),
-                f1(t.km), Math.round(t.avgKmh).toString(), t.minutes.toString(),
-                statusName(t.status), if (t.manual) "ručně" else "automaticky", t.note
-            )
+        val sb = StringBuilder("\uFEFF")
+        sb.append(
+            "Datum;Typ;Začátek;Konec;Start;Start GPS;Cíl;Cíl GPS;Km;Průměrná rychlost (km/h);Doba (min);Status;Záznam;Poznámka;" +
+                "Čerpací stanice;Litry;Cena vč. DPH;Cena bez DPH\r\n"
+        )
+        for ((_, item) in merged(trips, fuel)) {
+            val row = if (item is Trip) listOf(
+                d.format(Date(item.startTs)), "Jízda", h.format(Date(item.startTs)), h.format(Date(item.endTs)),
+                item.startPlace, Places.coords(item.sLat, item.sLon), item.endPlace, Places.coords(item.eLat, item.eLon),
+                f1(item.km), Math.round(item.avgKmh).toString(), item.minutes.toString(),
+                statusName(item.status), if (item.manual) "ručně" else "automaticky", item.note, "", "", "", ""
+            ) else {
+                val f = item as Fuel
+                listOf(
+                    d.format(Date(f.ts)), "Tankování", "", "", "", "", "", "", "", "", "", "", "", "",
+                    f.station, money(f.liters), money(f.priceVat), money(f.priceNoVat)
+                )
+            }
             sb.append(row.joinToString(";") { q(it) }).append("\r\n")
         }
         out.write(sb.toString().toByteArray(Charsets.UTF_8))
@@ -61,55 +86,64 @@ object Export {
         }
     }
 
-    private fun header(c: Canvas, title: String?, summary: String?, bold: TextPaint, line: Paint): Float {
+    private fun header(c: Canvas, title: String?, summary: List<String>, bold: TextPaint, line: Paint): Float {
         var y = 40f
         if (title != null) {
             val big = TextPaint(bold); big.textSize = 15f
             c.drawText(title, M, y, big)
             y += 16f
-            if (summary != null) {
-                val small = TextPaint(bold); small.typeface = Typeface.DEFAULT
-                c.drawText(summary, M, y, small)
-                y += 20f
-            }
+            val small = TextPaint(bold); small.typeface = Typeface.DEFAULT
+            for (s in summary) { c.drawText(s, M, y, small); y += 13f }
+            y += 8f
         }
         row(c, y, cols.map { it.first }, bold)
         c.drawLine(M, y + 5f, W - M, y + 5f, line)
         return y + 18f
     }
 
-    /** PDF na šířku A4: nadpis, souhrn a tabulka jízd, podle potřeby na více stran. */
-    fun pdf(out: OutputStream, title: String, trips: List<Trip>, odo: String?) {
+    /** PDF na šířku A4: nadpis, souhrn a tabulka jízd s tankováním u příslušných dnů, podle potřeby na více stran. */
+    fun pdf(out: OutputStream, title: String, trips: List<Trip>, fuel: List<Fuel>, extra: List<String>) {
         val d = SimpleDateFormat("d.M.yyyy", cs)
         val h = SimpleDateFormat("HH:mm", cs)
         val p = TextPaint(Paint.ANTI_ALIAS_FLAG); p.textSize = 9f; p.color = Color.BLACK
         val bold = TextPaint(p); bold.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         val line = Paint(); line.color = Color.GRAY; line.strokeWidth = 0.6f
-        val sorted = trips.sortedBy { it.startTs }
-        val km = sorted.sumOf { it.km }
-        val kmS = sorted.filter { it.status == "S" }.sumOf { it.km }
-        val kmP = sorted.filter { it.status == "P" }.sumOf { it.km }
-        val summary = "Jízd: ${sorted.size}   Celkem: ${f1(km)} km   Služebně: ${f1(kmS)} km   Soukromě: ${f1(kmP)} km" +
-            (if (odo != null) "   $odo" else "")
+        val km = trips.sumOf { it.km }
+        val kmS = trips.filter { it.status == "S" }.sumOf { it.km }
+        val kmP = trips.filter { it.status == "P" }.sumOf { it.km }
+        val summary = listOf(
+            "Jízd: ${trips.size}   Celkem: ${f1(km)} km   Služebně: ${f1(kmS)} km   Soukromě: ${f1(kmP)} km"
+        ) + extra
 
         val doc = PdfDocument()
         var pageNo = 1
         var page = doc.startPage(PdfDocument.PageInfo.Builder(W, H, pageNo).create())
         var y = header(page.canvas, title, summary, bold, line)
-        for (t in sorted) {
+        for ((_, item) in merged(trips, fuel)) {
             if (y > H - 36f) {
                 doc.finishPage(page)
                 pageNo++
                 page = doc.startPage(PdfDocument.PageInfo.Builder(W, H, pageNo).create())
-                y = header(page.canvas, null, null, bold, line)
+                y = header(page.canvas, null, emptyList(), bold, line)
             }
-            row(
-                page.canvas, y, listOf(
-                    d.format(Date(t.startTs)), h.format(Date(t.startTs)) + "–" + h.format(Date(t.endTs)),
-                    t.startPlace, Places.coords(t.sLat, t.sLon), t.endPlace, Places.coords(t.eLat, t.eLon),
-                    f1(t.km), Math.round(t.avgKmh).toString(), t.minutes.toString(), statusName(t.status), t.note
-                ), p
-            )
+            if (item is Trip) {
+                row(
+                    page.canvas, y, listOf(
+                        d.format(Date(item.startTs)), h.format(Date(item.startTs)) + "–" + h.format(Date(item.endTs)),
+                        item.startPlace, Places.coords(item.sLat, item.sLon), item.endPlace, Places.coords(item.eLat, item.eLon),
+                        f1(item.km), Math.round(item.avgKmh).toString(), item.minutes.toString(), statusName(item.status), item.note
+                    ), p
+                )
+            } else {
+                val f = item as Fuel
+                // Tankování: jeden tučný řádek přes šířku tabulky pod jízdami daného dne.
+                page.canvas.drawText(d.format(Date(f.ts)), M, y, bold)
+                page.canvas.drawText(
+                    "Tankování: " + f.station.ifBlank { "neuvedeno" } + "   " + money(f.liters) + " l   " +
+                        money(f.priceVat) + " Kč vč. DPH   " + money(f.priceNoVat) + " Kč bez DPH",
+                    M + cols[0].second, y, bold
+                )
+            }
             y += 16f
         }
         doc.finishPage(page)

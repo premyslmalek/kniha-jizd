@@ -24,6 +24,7 @@ object Receipts {
     private val numRx = Regex("\\d{1,3}(?:[ \\u00A0]\\d{3})+[.,]\\d{2}|\\d{1,6}[.,]\\d{2}")
     // "l" čtečka často zamění za "I" nebo "1", proto se bere i to; "Kč/l" (cena za litr) se vynechává.
     private val litersRx = Regex("(?<![\\d.,])(\\d{1,3}[.,]\\d{1,3})\\s*(?:ltr|litr[ůuy]?|[lLI])(?![\\w/])")
+    private val perLiterRx = Regex("(\\d{1,3}[.,]\\d{1,3})\\s*(?:Kč|Kc|CZK)?\\s*/\\s*[lLI1]")
     private val anyNumRx = Regex("(?<![\\d.,])\\d{1,3}[.,]\\d{1,3}(?![\\d.,])")
     private val totalWords = listOf("celkem", "k úhradě", "k uhrade", "úhrada", "uhrada", "suma", "total", "k platbě", "k platbe")
     private val paidWords = listOf("hotov", "vráceno", "vraceno", "přijato", "prijato", "karta", "zaplaceno")
@@ -54,15 +55,21 @@ object Receipts {
      */
     private fun findLiters(text: String, total: Double): Double {
         val nums = anyNumRx.findAll(text).mapNotNull { toD(it.value) }.toList()
+        val withUnit = litersRx.findAll(text).mapNotNull { toD(it.groupValues[1]) }.toSet()
+        val unitPrices = perLiterRx.findAll(text).mapNotNull { toD(it.groupValues[1]) }.toSet()
         if (total > 0.0) {
+            // Součin je souměrný, takže dvojici (množství, cena za litr) je potřeba ještě správně otočit:
+            // rozhodne jednotka u čísla ("l" = litry, "Kč/l" = cena), jinak pořadí na účtence.
             var best = 0.0
-            var bestErr = Double.MAX_VALUE
+            var bestScore = -1
             for (q in nums) {
                 if (q < 1.0 || q > 300.0) continue
                 for (p in nums) {
-                    if (p < 15.0 || p > 90.0) continue
-                    val err = Math.abs(q * p - total) / total
-                    if (err < 0.006 && err < bestErr) { bestErr = err; best = q }
+                    if (p < 15.0 || p > 90.0 || q == p) continue
+                    if (Math.abs(q * p - total) / total >= 0.006) continue
+                    val score = (if (q in withUnit) 2 else 0) + (if (p in unitPrices) 2 else 0) -
+                        (if (q in unitPrices) 2 else 0) - (if (p in withUnit) 2 else 0)
+                    if (score > bestScore) { bestScore = score; best = q }
                 }
             }
             if (best > 0.0) return best

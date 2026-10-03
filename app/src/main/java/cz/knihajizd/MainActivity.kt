@@ -1052,7 +1052,7 @@ class MainActivity : Activity() {
             val out = contentResolver.openOutputStream(uri)
             if (out == null) { toast("Soubor se nepodařilo uložit."); return }
             out.use {
-                if (pendingExport == "csv") Export.csv(it, trips)
+                if (pendingExport == "csv") Export.csv(it, trips, db.fuelMonth(year, month))
                 else {
                     val o = odometer(year, month)
                     val odoTxt = if (o == null) null
@@ -1061,8 +1061,9 @@ class MainActivity : Activity() {
                         "Tachometr: ${km0(o[0])} → ${km0(o[1])} km" +
                             (if (adj != null) " (dorovnání ${signed(adj)} km)" else "")
                     }
-                    val extra = listOfNotNull(odoTxt, fuelSummary(db.fuelMonth(year, month))).joinToString("   ")
-                    Export.pdf(it, "Kniha jízd – " + MONTHS[month] + " " + year, trips, extra)
+                    val fuel = db.fuelMonth(year, month)
+                    val extra = listOfNotNull(odoTxt, fuelSummary(fuel) + "  ·  " + money(fuel.sumOf { f -> f.priceNoVat }) + " Kč bez DPH")
+                    Export.pdf(it, "Kniha jízd – " + MONTHS[month] + " " + year, trips, fuel, extra)
                 }
             }
             toast("Soubor je uložen.")
