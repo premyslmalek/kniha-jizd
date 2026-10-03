@@ -563,16 +563,115 @@ class MainActivity : Activity() {
         if (selected.isNotEmpty()) {
             // režim výběru: místo spodní nabídky akce nad vybranými jízdami
             bottom.removeAllViews()
-            bottom.addView(btn("Zrušit výběr", Color.WHITE, INK, LINE) { selected.clear(); render() }, lp(0, WRAP, 1f))
+            bottom.orientation = LinearLayout.VERTICAL
+            val selKm = trips.filter { selected.contains(it.id) }.sumOf { it.km }
+            val info = tv("Vybráno jízd: " + selected.size + "  ·  celkem " + f1(selKm) + " km", 15f, INK, true)
+            info.gravity = Gravity.CENTER
+            bottom.addView(info)
+            val acts = hbox()
+            val small = { b: TextView -> b.textSize = 13f; b.setPadding(dp(2), dp(14), dp(2), dp(14)); b }
+            acts.addView(small(btn("Zrušit výběr", Color.WHITE, INK, LINE) { selected.clear(); render() }), lp(0, WRAP, 1f))
+            acts.addView(small(btn("Smazat", Color.WHITE, RED, RED) { deleteSelectedDialog() }), lp(0, WRAP, 0.8f, 0, 6))
             val can = selected.size == 2
-            bottom.addView(
-                btn("Sloučit jízdy (" + selected.size + ")", if (can) BLUE else GREY_BG, if (can) Color.WHITE else MUTED) {
+            acts.addView(
+                small(btn("Sloučit jízdy", if (can) BLUE else GREY_BG, if (can) Color.WHITE else MUTED) {
                     if (!can) toast("Sloučit lze právě dvě jízdy.") else mergeDialog()
-                }, lp(0, WRAP, 1.4f, 0, 8)
+                }), lp(0, WRAP, 1.1f, 0, 6)
             )
+            bottom.addView(acts, lp(MATCH, WRAP, 0f, 8))
         }
         page.addView(bottom)
         return page
+    }
+
+    /** Hromadné smazání vybraných jízd po potvrzení. */
+    private fun deleteSelectedDialog() {
+        val trips = selected.mapNotNull { db.get(it) }
+        if (trips.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setTitle("Smazat vybrané jízdy?")
+            .setMessage(
+                "Smaže se jízd: " + trips.size + ", celkem " + f1(trips.sumOf { it.km }) + " km.\n\n" +
+                    "Jízdy zmizí z přehledu, součtů, tachometru i exportu. Akci nelze vrátit."
+            )
+            .setPositiveButton("Smazat") { _, _ ->
+                db.deleteTrips(selected.toList())
+                selected.clear()
+                render()
+            }
+            .setNegativeButton("Ponechat", null)
+            .show()
+    }
+
+    // ---------- adresář cílů ----------
+
+    /** Výběr firmy z adresáře s hledáním podle názvu, ulice nebo města. */
+    private fun contactDialog(onPick: (Contact) -> Unit) {
+        val all = db.contacts()
+        if (all.isEmpty()) { toast("Adresář cílů je prázdný. Nahrajete ho v nastavení ze souboru CSV."); return }
+        val search = field("", "hledat firmu nebo město", null)
+        val list = vbox()
+        val wrap = vbox()
+        wrap.setPadding(dp(20), dp(8), dp(20), 0)
+        wrap.addView(search)
+        val sc = ScrollView(this)
+        sc.addView(list)
+        wrap.addView(sc, lp(MATCH, dp(320), 0f, 8))
+        val dialog = AlertDialog.Builder(this).setTitle("Vybrat cíl z adresáře").setView(wrap)
+            .setNegativeButton("Zrušit", null).create()
+        val fill = { q: String ->
+            list.removeAllViews()
+            val needle = q.trim().lowercase()
+            val hits = all.filter { needle.isEmpty() || (it.name + " " + it.street + " " + it.city).lowercase().contains(needle) }
+            for (c in hits.take(60)) {
+                val row = vbox()
+                row.setPadding(0, dp(10), 0, dp(10))
+                row.addView(tv(c.name, 15f, INK, true))
+                if (c.address.isNotBlank()) row.addView(tv(c.address, 13f, MUTED))
+                row.isClickable = true
+                row.setOnClickListener { dialog.dismiss(); onPick(c) }
+                list.addView(row)
+            }
+            if (hits.isEmpty()) list.addView(tv("Nic nenalezeno.", 14f, MUTED))
+            if (hits.size > 60) list.addView(tv("Zobrazeno prvních 60 z " + hits.size + ". Upřesněte hledání.", 13f, MUTED))
+        }
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { fill(s?.toString() ?: "") }
+        })
+        fill("")
+        dialog.show()
+    }
+
+    private fun pickContactsCsv() {
+        val i = Intent(Intent.ACTION_GET_CONTENT)
+        i.addCategory(Intent.CATEGORY_OPENABLE)
+        i.type = "*/*"
+        try {
+            startActivityForResult(i, 10)
+        } catch (e: Exception) {
+            toast("V telefonu chybí aplikace pro výběr souborů.")
+        }
+    }
+
+    private fun importContacts(uri: Uri) {
+        try {
+            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            val list = if (bytes == null) emptyList() else ContactsCsv.parse(ContactsCsv.decode(bytes))
+            if (list.isEmpty()) { toast("V souboru se nepodařilo najít žádnou firmu. Očekávám sloupce Název firmy, Ulice, Město, PSČ."); return }
+            val go = { db.contactsReplace(list); toast("Do adresáře nahráno firem: " + list.size); render() }
+            val old = db.contacts().size
+            if (old == 0) go()
+            else AlertDialog.Builder(this)
+                .setTitle("Nahradit adresář?")
+                .setMessage("Stávajících " + old + " firem se nahradí " + list.size + " firmami ze souboru.")
+                .setPositiveButton("Nahradit") { _, _ -> go() }
+                .setNegativeButton("Zrušit", null)
+                .show()
+        } catch (e: Exception) {
+            toast("Soubor se nepodařilo načíst.")
+        }
     }
 
     /** Potvrzení a provedení sloučení vybraných jízd. */
@@ -681,6 +780,13 @@ class MainActivity : Activity() {
                     }
                 }
                 .setNegativeButton("Zrušit", null)
+                .setNeutralButton("Z adresáře") { _, _ ->
+                    contactDialog { c ->
+                        saveNote()
+                        if (start) db.setPlaces(t.id, c.place, t.endPlace) else db.setPlaces(t.id, t.startPlace, c.place)
+                        render()
+                    }
+                }
                 .show()
         }
         return v
@@ -887,6 +993,17 @@ class MainActivity : Activity() {
             lp(MATCH, WRAP, 0f, 6)
         )
 
+        body.addView(tv("Adresář cílů", 14f, INK, true), lp(MATCH, WRAP, 0f, 18))
+        val book = card()
+        val nContacts = db.contacts().size
+        book.addView(tv(if (nContacts == 0) "Adresář je prázdný" else "Firem v adresáři: $nContacts", 15f, INK, true))
+        book.addView(
+            tv("Soubor CSV se sloupci Název firmy, Ulice s č.p., Město, PSČ. Z adresáře pak vyberete cíl při ručním zadání jízdy nebo při úpravě cíle jízdy.", 13f, MUTED),
+            lp(MATCH, WRAP, 0f, 2)
+        )
+        book.addView(btn("Nahrát CSV s cíli", Color.WHITE, INK, LINE) { saveSettings(); pickContactsCsv() }, lp(MATCH, WRAP, 0f, 10))
+        body.addView(book, lp(MATCH, WRAP, 0f, 8))
+
         body.addView(tv("Oprávnění", 14f, INK, true), lp(MATCH, WRAP, 0f, 18))
         val perm = card()
         perm.addView(tv("Poloha: " + if (hasLoc()) "povolena" else "nepovolena", 15f))
@@ -1033,6 +1150,17 @@ class MainActivity : Activity() {
         page.addView(topBar("Nová jízda"))
 
         val body = vbox()
+        // Když je za zobrazený měsíc zadaný skutečný stav tachometru, ukáže se, kolik km v záznamech chybí.
+        val missing = curOdo()?.adjustment(ym(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH)))
+        if (missing != null && missing > 0) {
+            val m = tv(
+                "V měsíci " + MONTHS[cal.get(Calendar.MONTH)] + " chybí u vozu " + vehShort(viewVehicle) + " do skutečného stavu tachometru " +
+                    km0(missing) + " km. Doplňte jízdy, které aplikace nezaznamenala.", 14f, ORANGE, true
+            )
+            m.background = bg(ORANGE_BG, 12)
+            m.setPadding(dp(12), dp(10), dp(12), dp(10))
+            body.addView(m, lp(MATCH, WRAP, 0f, 14))
+        }
         // předvyplní se dnešek, pokud je zobrazený aktuální měsíc, jinak první den zobrazeného měsíce
         val today = Calendar.getInstance()
         val sameMonth = today.get(Calendar.YEAR) == cal.get(Calendar.YEAR) && today.get(Calendar.MONTH) == cal.get(Calendar.MONTH)
@@ -1058,6 +1186,10 @@ class MainActivity : Activity() {
         body.addView(start, lp(MATCH, WRAP, 0f, 6))
         body.addView(tv("Cíl", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
         body.addView(end, lp(MATCH, WRAP, 0f, 6))
+        body.addView(
+            btn("Vybrat cíl z adresáře", Color.WHITE, INK, LINE) { contactDialog { c -> end.setText(c.place) } },
+            lp(MATCH, WRAP, 0f, 6)
+        )
         body.addView(tv("Ujeté km", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
         body.addView(km, lp(MATCH, WRAP, 0f, 6))
 
@@ -1464,6 +1596,11 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 10) {
+            val uri = data?.data
+            if (resultCode == RESULT_OK && uri != null) importContacts(uri)
+            return
+        }
         if (requestCode == 8 || requestCode == 9) {
             val uri = if (requestCode == 9) cameraUri else data?.data
             if (resultCode == RESULT_OK && uri != null) readReceipt(uri)

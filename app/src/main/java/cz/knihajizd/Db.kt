@@ -93,7 +93,7 @@ class Prefs(ctx: Context) {
         set(v) = sp.edit().putInt("stopMin", v).apply()
 }
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 6) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 7) {
     private val appCtx = ctx.applicationContext
 
     /** Vozidlo, pro které se zobrazují přehledy; 0 = všechna vozidla. */
@@ -112,6 +112,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
                 "liters REAL, price_vat REAL, price_novat REAL, photo TEXT, vehicle_id INTEGER DEFAULT 1)"
         )
         createVehicles(db, 0)
+        createContacts(db)
     }
 
     /** Vozidla a skutečné stavy tachometru po vozidlech; založí se první vozidlo, aby aplikace měla kam zapisovat. */
@@ -200,6 +201,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
             // výchozí místo vozidla (kde je garážované)
             db.execSQL("ALTER TABLE vehicles ADD COLUMN home TEXT")
         }
+        if (oldVersion < 7) createContacts(db)
     }
 
     fun readings(vehicleId: Long): List<Reading> {
@@ -225,6 +227,50 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
             "SELECT COALESCE(SUM(dist_m), 0) FROM trips WHERE vehicle_id = ? AND start_ts >= ? AND start_ts < ?",
             arrayOf(vehicleId.toString(), from.toString(), to.toString())
         ).use { c -> return if (c.moveToFirst()) c.getDouble(0) / 1000.0 else 0.0 }
+    }
+
+    // ----- adresář cílů -----
+
+    private fun createContacts(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS contacts(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, street TEXT, city TEXT, zip TEXT)")
+    }
+
+    fun contacts(): List<Contact> {
+        val out = ArrayList<Contact>()
+        readableDatabase.rawQuery("SELECT id, name, street, city, zip FROM contacts ORDER BY name COLLATE NOCASE", null).use { c ->
+            while (c.moveToNext()) out.add(
+                Contact(c.getLong(0), c.getString(1) ?: "", c.getString(2) ?: "", c.getString(3) ?: "", c.getString(4) ?: "")
+            )
+        }
+        return out
+    }
+
+    /** Nahradí celý adresář nově nahraným seznamem. */
+    fun contactsReplace(list: List<Contact>) {
+        val w = writableDatabase
+        w.beginTransaction()
+        try {
+            w.delete("contacts", null, null)
+            for (c in list) {
+                val v = ContentValues()
+                v.put("name", c.name); v.put("street", c.street); v.put("city", c.city); v.put("zip", c.zip)
+                w.insert("contacts", null, v)
+            }
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+    }
+
+    fun deleteTrips(ids: Collection<Long>) {
+        val w = writableDatabase
+        w.beginTransaction()
+        try {
+            for (id in ids) w.delete("trips", "id = ?", arrayOf(id.toString()))
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
     }
 
     // ----- vozidla -----
