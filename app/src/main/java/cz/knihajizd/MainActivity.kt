@@ -627,8 +627,10 @@ class MainActivity : Activity() {
                 // vpravo místo pro široký posuvník
                 row.setPadding(0, dp(10), dp(44), dp(10))
                 row.addView(tv(c.name, 15f, INK, true))
-                if (c.address.isNotBlank()) row.addView(tv(c.address, 13f, MUTED))
-                row.addView(tv("Po dálnici: " + km(c.kmHighway) + "  ·  mimo dálnice: " + km(c.kmOther), 13f, INK))
+                if (c.city.isNotBlank()) row.addView(tv(c.city, 13f, MUTED))
+                // dvojnásobek km po dálnici, a když chybí, km mimo dálnice
+                val oneWay = if (c.kmHighway > 0.0) c.kmHighway else c.kmOther
+                row.addView(tv("KM tam a zpět: " + km(oneWay * 2.0), 13f, INK))
                 return row
             }
         }
@@ -1249,7 +1251,9 @@ class MainActivity : Activity() {
                 val oneWay = if (c.kmHighway > 0.0) c.kmHighway else c.kmOther
                 if (oneWay > 0.0) {
                     km.setText(String.format(cs, "%.1f", oneWay * 2.0))
-                    if (note.text.toString().isBlank()) note.setText(ROUND_NOTE)
+                    // poznámka se přepíše jen tehdy, když ji uživatel sám nezměnil
+                    val cur = note.text.toString().trim()
+                    if (cur.isEmpty() || cur.startsWith(ROUND_NOTE)) note.setText(ROUND_NOTE + " – " + c.name)
                 }
             } },
             lp(MATCH, WRAP, 0f, 6)
