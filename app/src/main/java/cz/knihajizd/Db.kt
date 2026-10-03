@@ -254,6 +254,32 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
         writableDatabase.delete("vehicles", "id = ?", arrayOf(id.toString()))
     }
 
+    /**
+     * Sloučí jízdy do jedné: začátek (místo, čas, GPS) z první, konec z poslední, km se sečtou.
+     * Poznámka je cíl první jízdy s dodatkem "a zpět"; původní poznámky se připojí za ni.
+     */
+    fun mergeTrips(ids: Collection<Long>): Boolean {
+        val trips = ids.mapNotNull { get(it) }.sortedBy { it.startTs }
+        if (trips.size < 2) return false
+        val first = trips.first()
+        val last = trips.last()
+        val notes = listOf(first.endPlace + " a zpět") + trips.map { it.note }.filter { it.isNotBlank() }
+        val w = writableDatabase
+        w.beginTransaction()
+        try {
+            val v = ContentValues()
+            v.put("end_ts", last.endTs); v.put("end_lat", last.eLat); v.put("end_lon", last.eLon)
+            v.put("end_place", last.endPlace); v.put("dist_m", trips.sumOf { it.distM })
+            v.put("note", notes.distinct().joinToString("; "))
+            w.update("trips", v, "id = ?", arrayOf(first.id.toString()))
+            for (t in trips.drop(1)) w.delete("trips", "id = ?", arrayOf(t.id.toString()))
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        return true
+    }
+
     fun setTripVehicle(id: Long, vehicleId: Long) {
         val v = ContentValues(); v.put("vehicle_id", vehicleId)
         writableDatabase.update("trips", v, "id = ?", arrayOf(id.toString()))

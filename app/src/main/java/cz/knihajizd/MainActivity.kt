@@ -84,6 +84,10 @@ class MainActivity : Activity() {
     /** Vozidlo, pro které se zobrazují přehledy (0 = všechna), a vozidlo předvolené pro ručně spuštěnou jízdu. */
     private var viewVehicle = 0L
     private var manualVehicle = 0L
+    /** Jízdy vybrané dlouhým podržením ke sloučení. */
+    private val selected = LinkedHashSet<Long>()
+    private var listScroll: ScrollView? = null
+    private var restoreY = 0
     private var dashYearly = false
     private var dashYear = Calendar.getInstance().get(Calendar.YEAR)
 
@@ -139,7 +143,9 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (screen == "list") {
+        if (screen == "list" && selected.isNotEmpty()) {
+            selected.clear(); render()
+        } else if (screen == "list") {
             @Suppress("DEPRECATION")
             super.onBackPressed()
         } else goBack()
@@ -410,6 +416,7 @@ class MainActivity : Activity() {
         val year = cal.get(Calendar.YEAR)
         val month = cal.get(Calendar.MONTH)
         val trips = db.month(year, month)
+        selected.retainAll(trips.map { it.id }.toSet())
         val page = vbox()
         page.setBackgroundColor(GROUND)
 
@@ -529,6 +536,12 @@ class MainActivity : Activity() {
         val scroll = ScrollView(this)
         content.addView(list)
         scroll.addView(content)
+        listScroll = scroll
+        if (restoreY > 0) {
+            val y = restoreY
+            restoreY = 0
+            scroll.post { scroll.scrollTo(0, y) }
+        }
         page.addView(scroll, lp(MATCH, 0, 1f))
 
         val bottom = hbox()
@@ -545,8 +558,45 @@ class MainActivity : Activity() {
         bottom.addView(navBtn("Účtenky", Color.WHITE, INK, LINE) { screen = "fuel"; render() }, lp(0, WRAP, 1f, 0, 6))
         bottom.addView(navBtn("Export", BLUE, Color.WHITE, null) { exportDialog() }, lp(0, WRAP, 1f, 0, 6))
         bottom.addView(navBtn("Nastavení", Color.WHITE, INK, LINE) { screen = "settings"; render() }, lp(0, WRAP, 1.3f, 0, 6))
+        if (selected.isNotEmpty()) {
+            // režim výběru: místo spodní nabídky akce nad vybranými jízdami
+            bottom.removeAllViews()
+            bottom.addView(btn("Zrušit výběr", Color.WHITE, INK, LINE) { selected.clear(); render() }, lp(0, WRAP, 1f))
+            val can = selected.size >= 2
+            bottom.addView(
+                btn("Sloučit jízdy (" + selected.size + ")", if (can) BLUE else GREY_BG, if (can) Color.WHITE else MUTED) {
+                    if (!can) toast("Vyberte aspoň dvě jízdy.") else mergeDialog()
+                }, lp(0, WRAP, 1.4f, 0, 8)
+            )
+        }
         page.addView(bottom)
         return page
+    }
+
+    /** Potvrzení a provedení sloučení vybraných jízd. */
+    private fun mergeDialog() {
+        val trips = selected.mapNotNull { db.get(it) }.sortedBy { it.startTs }
+        if (trips.size < 2) return
+        if (trips.map { it.vehicleId }.distinct().size > 1) {
+            toast("Sloučit lze jen jízdy stejného vozidla.")
+            return
+        }
+        val first = trips.first()
+        val last = trips.last()
+        val msg = first.startPlace + " → " + last.endPlace + "\n" +
+            dateFmt.format(Date(first.startTs)) + " " + timeFmt.format(Date(first.startTs)) + " – " + timeFmt.format(Date(last.endTs)) + "\n" +
+            f1(trips.sumOf { it.km }) + " km\nPoznámka: " + first.endPlace + " a zpět\n\n" +
+            "Původní jízdy se nahradí jednou sloučenou. Akci nelze vrátit."
+        AlertDialog.Builder(this)
+            .setTitle("Sloučit " + trips.size + " jízdy do jedné?")
+            .setMessage(msg)
+            .setPositiveButton("Sloučit") { _, _ ->
+                db.mergeTrips(selected.toList())
+                selected.clear()
+                render()
+            }
+            .setNegativeButton("Zrušit", null)
+            .show()
     }
 
     private fun tripCard(t: Trip): View {
@@ -564,8 +614,20 @@ class MainActivity : Activity() {
         val meta = f1(t.km) + " km  ·  Ø " + Math.round(t.avgKmh) + " km/h  ·  " + t.minutes + " min" +
             (if (t.manual) "  ·  ručně" else "")
         c.addView(tv(meta, 13f, MUTED), lp(MATCH, WRAP, 0f, 8))
+        if (selected.contains(t.id)) c.background = bg(BLUE_BG, 16, BLUE)
+        // výběr se přepne bez odskočení seznamu na začátek
+        val toggle = {
+            if (!selected.remove(t.id)) selected.add(t.id)
+            restoreY = listScroll?.scrollY ?: 0
+            render()
+        }
         c.isClickable = true
-        c.setOnClickListener { detailId = t.id; screen = "detail"; render() }
+        c.isLongClickable = true
+        c.setOnClickListener {
+            if (selected.isNotEmpty()) toggle()
+            else { detailId = t.id; screen = "detail"; render() }
+        }
+        c.setOnLongClickListener { toggle(); true }
         return c
     }
 
