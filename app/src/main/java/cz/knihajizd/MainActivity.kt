@@ -585,7 +585,7 @@ class MainActivity : Activity() {
         val last = trips.last()
         val msg = first.startPlace + " → " + last.endPlace + "\n" +
             dateFmt.format(Date(first.startTs)) + " " + timeFmt.format(Date(first.startTs)) + " – " + timeFmt.format(Date(last.endTs)) + "\n" +
-            f1(trips.sumOf { it.km }) + " km\nPoznámka: " + first.endPlace + " a zpět\n\n" +
+            f1(trips.sumOf { it.km }) + " km\nPoznámka: " + first.startPlace + " -> " + first.endPlace + " a zpět\n\n" +
             "Původní jízdy se nahradí jednou sloučenou. Akci nelze vrátit."
         AlertDialog.Builder(this)
             .setTitle("Sloučit " + trips.size + " jízdy do jedné?")
