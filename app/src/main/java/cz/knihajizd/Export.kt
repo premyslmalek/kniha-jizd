@@ -63,7 +63,7 @@ object Export {
                 val f = item as Fuel
                 listOf(
                     d.format(Date(f.ts)), plates[f.vehicleId] ?: "", "Tankování", "", "", "", "", "", "", "", "", "", "", "", "",
-                    f.station, money(f.liters), money(f.priceVat), money(f.priceNoVat)
+                    f.place, money(f.liters), money(f.priceVat), money(f.priceNoVat)
                 )
             }
             sb.append(row.joinToString(";") { q(it) }).append("\r\n")
@@ -143,7 +143,7 @@ object Export {
                 // Tankování: jeden tučný řádek přes šířku tabulky pod jízdami daného dne.
                 page.canvas.drawText(d.format(Date(f.ts)), M, y, bold)
                 page.canvas.drawText(
-                    "Tankování" + (plates[f.vehicleId]?.let { " ($it)" } ?: "") + ": " + f.station.ifBlank { "neuvedeno" } + "   " + money(f.liters) + " l   " +
+                    "Tankování" + (plates[f.vehicleId]?.let { " ($it)" } ?: "") + ": " + f.place.ifBlank { "neuvedeno" } + "   " + money(f.liters) + " l   " +
                         money(f.priceVat) + " Kč vč. DPH   " + money(f.priceNoVat) + " Kč bez DPH",
                     M + cols[0].second, y, bold
                 )

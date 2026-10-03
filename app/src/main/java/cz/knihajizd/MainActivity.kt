@@ -521,19 +521,23 @@ class MainActivity : Activity() {
 
         val list = vbox()
         list.setPadding(dp(16), dp(4), dp(16), dp(16))
-        if (trips.isEmpty()) {
-            val e = tv("V tomto měsíci zatím není žádná jízda.", 15f, MUTED)
+        // jízdy a tankování v jednom sledu podle data, nejnovější nahoře
+        val fuels = db.fuelMonth(year, month)
+        val items = (trips.map { Pair<Long, Any>(it.startTs, it) } + fuels.map { Pair<Long, Any>(it.ts, it) })
+            .sortedByDescending { it.first }
+        if (items.isEmpty()) {
+            val e = tv("V tomto měsíci zatím není žádná jízda ani tankování.", 15f, MUTED)
             e.gravity = Gravity.CENTER
             list.addView(e, lp(MATCH, WRAP, 0f, 40))
         }
         var lastDay = ""
-        for (t in trips) {
-            val day = dayFmt.format(Date(t.startTs)).replaceFirstChar { it.uppercase() }
+        for ((ts, item) in items) {
+            val day = dayFmt.format(Date(ts)).replaceFirstChar { it.uppercase() }
             if (day != lastDay) {
                 list.addView(tv(day, 14f, INK, true), lp(MATCH, WRAP, 0f, 14))
                 lastDay = day
             }
-            list.addView(tripCard(t), lp(MATCH, WRAP, 0f, 8))
+            list.addView(if (item is Trip) tripCard(item) else fuelCard(item as Fuel), lp(MATCH, WRAP, 0f, 8))
         }
         val scroll = ScrollView(this)
         content.addView(list)
@@ -702,6 +706,26 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("Zrušit", null)
             .show()
+    }
+
+    /** Tankování v přehledu jízd: zelená karta, aby se na první pohled lišila od jízdy. */
+    private fun fuelCard(f: Fuel): View {
+        val c = vbox()
+        c.background = bg(Color.parseColor("#E3F1E8"), 16, GREEN)
+        c.setPadding(dp(14), dp(12), dp(14), dp(12))
+        val top = hbox()
+        top.gravity = Gravity.CENTER_VERTICAL
+        top.addView(tv("TANKOVÁNÍ  ·  " + vehShort(f.vehicleId), 12f, GREEN, true), lp(0, WRAP, 1f))
+        val amount = tv(money(f.priceVat) + " Kč", 15f, GREEN, true)
+        top.addView(amount)
+        c.addView(top)
+        c.addView(tv(String.format(cs, "%.2f", f.liters) + " l  ·  " + money(f.priceVat) + " Kč vč. DPH", 15f, INK, true), lp(MATCH, WRAP, 0f, 6))
+        c.addView(tv(f.place.ifBlank { "Čerpací stanice neuvedena" }, 13f, MUTED), lp(MATCH, WRAP, 0f, 2))
+        c.isClickable = true
+        c.setOnClickListener {
+            if (selected.isEmpty()) { fuelDraft = f; fuelMsg = ""; screen = "fuelEdit"; render() }
+        }
+        return c
     }
 
     private fun tripCard(t: Trip): View {
@@ -1315,7 +1339,7 @@ class MainActivity : Activity() {
         for (f in items) {
             val c = card()
             val top = hbox()
-            top.addView(tv(f.station.ifBlank { "Neuvedeno" }, 16f, INK, true), lp(0, WRAP, 1f))
+            top.addView(tv(f.place.ifBlank { "Neuvedeno" }, 16f, INK, true), lp(0, WRAP, 1f))
             top.addView(tv(dmy.format(Date(f.ts)), 13f, MUTED))
             c.addView(top)
             c.addView(
@@ -1507,7 +1531,8 @@ class MainActivity : Activity() {
             body.addView(tv("Fotka účtenky je uložená u záznamu. Klepnutím ji zvětšíte.", 12f, MUTED), lp(MATCH, WRAP, 0f, 4))
         }
         val date = field(dmy.format(Date(if (f.ts > 0) f.ts else System.currentTimeMillis())), "např. 3.10.2026", "0123456789.")
-        val station = field(f.station, "např. MOL Prostějov", null)
+        val station = field(f.station, "např. MOL", null)
+        val address = field(f.address, "např. Olomoucká 10, 796 01 Prostějov", null)
         val liters = field(dec(f.liters), "např. 42,15", "0123456789,.")
         val vat = field(dec(f.priceVat), "např. 1560,00", "0123456789,.")
         val noVat = field(dec(f.priceNoVat), "např. 1289,26", "0123456789,.")
@@ -1523,6 +1548,8 @@ class MainActivity : Activity() {
         body.addView(date, lp(MATCH, WRAP, 0f, 6))
         body.addView(tv("Čerpací stanice", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
         body.addView(station, lp(MATCH, WRAP, 0f, 6))
+        body.addView(tv("Adresa čerpací stanice", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        body.addView(address, lp(MATCH, WRAP, 0f, 6))
         body.addView(tv("Počet litrů", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
         body.addView(liters, lp(MATCH, WRAP, 0f, 6))
         body.addView(tv("Cena vč. DPH (Kč)", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
@@ -1550,7 +1577,7 @@ class MainActivity : Activity() {
                     val c = Calendar.getInstance()
                     c.time = d
                     c.set(Calendar.HOUR_OF_DAY, 12)
-                    db.fuelSave(Fuel(f.id, c.timeInMillis, station.text.toString().trim(), l, pv, num(noVat), f.photo, fVid))
+                    db.fuelSave(Fuel(f.id, c.timeInMillis, station.text.toString().trim(), l, pv, num(noVat), f.photo, fVid, address.text.toString().trim()))
                     // přehled účtenek se přepne na měsíc uložené účtenky
                     cal.set(Calendar.YEAR, c.get(Calendar.YEAR))
                     cal.set(Calendar.MONTH, c.get(Calendar.MONTH))

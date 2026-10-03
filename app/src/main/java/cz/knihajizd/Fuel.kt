@@ -12,8 +12,13 @@ data class Fuel(
     val priceNoVat: Double,
     /** Cesta k uložené fotce účtenky v úložišti aplikace; prázdná u ručně zadané účtenky. */
     val photo: String = "",
-    val vehicleId: Long = 0
-)
+    val vehicleId: Long = 0,
+    /** Adresa čerpací stanice. */
+    val address: String = ""
+) {
+    /** Název stanice s adresou, jak se zobrazuje v přehledu a exportu. */
+    val place: String get() = listOf(station, address).filter { it.isNotBlank() }.joinToString(", ")
+}
 
 /** Vytažení údajů z textu přečteného z fotky účtenky. Výsledek je jen návrh, uživatel ho před uložením kontroluje. */
 object Receipts {
@@ -78,6 +83,29 @@ object Receipts {
         return litersRx.findAll(text).mapNotNull { toD(it.groupValues[1]) }.firstOrNull { it in 1.0..300.0 } ?: 0.0
     }
 
+    private val pscRx = Regex("\\b\\d{3}\\s?\\d{2}\\s+\\p{L}[\\p{L} .\\-]+")
+    private val streetRx = Regex("^[\\p{L}][\\p{L} .\\-]*\\s\\d+[\\w/]*$")
+    private val siteWords = listOf("provozov", "čerpací stanice", "cerpaci stanice", "čs ", "stanice")
+
+    /**
+     * Adresa čerpací stanice: řádek s PSČ a obcí, případně s ulicí z řádku nad ním.
+     * Na účtence bývá i sídlo firmy; přednost má adresa uvedená u slova "provozovna" nebo "čerpací stanice".
+     */
+    private fun findAddress(lines: List<String>): String {
+        val idx = lines.indices.filter { pscRx.containsMatchIn(lines[it]) }
+        if (idx.isEmpty()) return ""
+        val near = idx.firstOrNull { i -> (maxOf(0, i - 2)..i).any { j -> siteWords.any { w -> lines[j].lowercase().contains(w) } } }
+        val i = near ?: idx.first()
+        val line = lines[i]
+        val m = pscRx.find(line) ?: return ""
+        // ulice bývá buď na stejném řádku před PSČ, nebo o řádek výš
+        val before = line.substring(0, m.range.first).trim().trim(',').substringAfter(':').trim()
+        val street = if (before.isNotEmpty()) before
+        else if (i > 0 && streetRx.matches(lines[i - 1].substringAfter(':').trim())) lines[i - 1].substringAfter(':').trim()
+        else ""
+        return listOf(street, m.value.trim()).filter { it.isNotBlank() }.joinToString(", ").take(80)
+    }
+
     fun parse(text: String): Fuel {
         val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
 
@@ -115,6 +143,6 @@ object Receipts {
         // U pohonných hmot je DPH 21 %; když základ na účtence nejde přečíst, dopočítá se.
         if (noVat == 0.0 && total > 0.0) noVat = Math.round(total / 1.21 * 100.0) / 100.0
 
-        return Fuel(0, ts, station, liters, total, noVat)
+        return Fuel(0, ts, station, liters, total, noVat, address = findAddress(lines))
     }
 }

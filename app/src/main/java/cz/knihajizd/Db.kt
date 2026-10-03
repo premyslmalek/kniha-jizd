@@ -93,7 +93,7 @@ class Prefs(ctx: Context) {
         set(v) = sp.edit().putInt("stopMin", v).apply()
 }
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 8) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 9) {
     private val appCtx = ctx.applicationContext
 
     /** Vozidlo, pro které se zobrazují přehledy; 0 = všechna vozidla. */
@@ -109,7 +109,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
         )
         db.execSQL(
             "CREATE TABLE fuel(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, station TEXT, " +
-                "liters REAL, price_vat REAL, price_novat REAL, photo TEXT, vehicle_id INTEGER DEFAULT 1)"
+                "liters REAL, price_vat REAL, price_novat REAL, photo TEXT, vehicle_id INTEGER DEFAULT 1, address TEXT)"
         )
         createVehicles(db, 0)
         createContacts(db)
@@ -135,11 +135,11 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
         val to = if (month0 == 11) monthStart(year + 1, 0) else monthStart(year, month0 + 1)
         val out = ArrayList<Fuel>()
         readableDatabase.rawQuery(
-            "SELECT id, ts, station, liters, price_vat, price_novat, photo, vehicle_id FROM fuel WHERE ts >= ? AND ts < ?" + vf() + " ORDER BY ts DESC, id DESC",
+            "SELECT id, ts, station, liters, price_vat, price_novat, photo, vehicle_id, address FROM fuel WHERE ts >= ? AND ts < ?" + vf() + " ORDER BY ts DESC, id DESC",
             arrayOf(from.toString(), to.toString())
         ).use { c ->
             while (c.moveToNext()) out.add(
-                Fuel(c.getLong(0), c.getLong(1), c.getString(2) ?: "", c.getDouble(3), c.getDouble(4), c.getDouble(5), c.getString(6) ?: "", c.getLong(7))
+                Fuel(c.getLong(0), c.getLong(1), c.getString(2) ?: "", c.getDouble(3), c.getDouble(4), c.getDouble(5), c.getString(6) ?: "", c.getLong(7), c.getString(8) ?: "")
             )
         }
         return out
@@ -158,11 +158,11 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
     fun fuelRange(from: Long, to: Long): List<Fuel> {
         val out = ArrayList<Fuel>()
         readableDatabase.rawQuery(
-            "SELECT id, ts, station, liters, price_vat, price_novat, photo, vehicle_id FROM fuel WHERE ts >= ? AND ts < ?" + vf() + " ORDER BY ts",
+            "SELECT id, ts, station, liters, price_vat, price_novat, photo, vehicle_id, address FROM fuel WHERE ts >= ? AND ts < ?" + vf() + " ORDER BY ts",
             arrayOf(from.toString(), to.toString())
         ).use { c ->
             while (c.moveToNext()) out.add(
-                Fuel(c.getLong(0), c.getLong(1), c.getString(2) ?: "", c.getDouble(3), c.getDouble(4), c.getDouble(5), c.getString(6) ?: "", c.getLong(7))
+                Fuel(c.getLong(0), c.getLong(1), c.getString(2) ?: "", c.getDouble(3), c.getDouble(4), c.getDouble(5), c.getString(6) ?: "", c.getLong(7), c.getString(8) ?: "")
             )
         }
         return out
@@ -171,7 +171,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
     fun fuelSave(f: Fuel) {
         val v = ContentValues()
         v.put("ts", f.ts); v.put("station", f.station); v.put("liters", f.liters)
-        v.put("price_vat", f.priceVat); v.put("price_novat", f.priceNoVat); v.put("photo", f.photo); v.put("vehicle_id", f.vehicleId)
+        v.put("price_vat", f.priceVat); v.put("price_novat", f.priceNoVat); v.put("photo", f.photo); v.put("vehicle_id", f.vehicleId); v.put("address", f.address)
         if (f.id == 0L) writableDatabase.insert("fuel", null, v)
         else writableDatabase.update("fuel", v, "id = ?", arrayOf(f.id.toString()))
     }
@@ -206,6 +206,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
             db.execSQL("ALTER TABLE contacts ADD COLUMN km_hw REAL")
             db.execSQL("ALTER TABLE contacts ADD COLUMN km_other REAL")
         }
+        if (oldVersion < 9) db.execSQL("ALTER TABLE fuel ADD COLUMN address TEXT")
     }
 
     fun readings(vehicleId: Long): List<Reading> {
