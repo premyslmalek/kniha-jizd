@@ -22,7 +22,9 @@ object Receipts {
     )
     private val dateRx = Regex("\\b(\\d{1,2})\\s?[./]\\s?(\\d{1,2})\\s?[./]\\s?(\\d{4}|\\d{2})\\b")
     private val numRx = Regex("\\d{1,3}(?:[ \\u00A0]\\d{3})+[.,]\\d{2}|\\d{1,6}[.,]\\d{2}")
-    private val litersRx = Regex("(\\d{1,3}[.,]\\d{1,3})\\s*(?:ltr|litr[ůuy]?|l)\\b", RegexOption.IGNORE_CASE)
+    // "l" čtečka často zamění za "I" nebo "1", proto se bere i to; "Kč/l" (cena za litr) se vynechává.
+    private val litersRx = Regex("(?<![\\d.,])(\\d{1,3}[.,]\\d{1,3})\\s*(?:ltr|litr[ůuy]?|[lLI])(?![\\w/])")
+    private val anyNumRx = Regex("(?<![\\d.,])\\d{1,3}[.,]\\d{1,3}(?![\\d.,])")
     private val totalWords = listOf("celkem", "k úhradě", "k uhrade", "úhrada", "uhrada", "suma", "total", "k platbě", "k platbe")
     private val paidWords = listOf("hotov", "vráceno", "vraceno", "přijato", "prijato", "karta", "zaplaceno")
     private val noVatWords = listOf("bez dph", "základ", "zaklad")
@@ -43,6 +45,29 @@ object Receipts {
             else if (i + 1 < lines.size) out.addAll(numbers(lines[i + 1]))
         }
         return out
+    }
+
+    /**
+     * Litry: nejspolehlivější je dvojice čísel "množství × cena za litr", jejichž součin dává celkovou cenu –
+     * nezávisí na rozložení účtenky ani na tom, jestli se správně přečetlo písmeno "l".
+     * Teprve když taková dvojice není, hledá se číslo následované jednotkou.
+     */
+    private fun findLiters(text: String, total: Double): Double {
+        val nums = anyNumRx.findAll(text).mapNotNull { toD(it.value) }.toList()
+        if (total > 0.0) {
+            var best = 0.0
+            var bestErr = Double.MAX_VALUE
+            for (q in nums) {
+                if (q < 1.0 || q > 300.0) continue
+                for (p in nums) {
+                    if (p < 15.0 || p > 90.0) continue
+                    val err = Math.abs(q * p - total) / total
+                    if (err < 0.006 && err < bestErr) { bestErr = err; best = q }
+                }
+            }
+            if (best > 0.0) return best
+        }
+        return litersRx.findAll(text).mapNotNull { toD(it.groupValues[1]) }.firstOrNull { it in 1.0..300.0 } ?: 0.0
     }
 
     fun parse(text: String): Fuel {
@@ -70,14 +95,13 @@ object Receipts {
         }
         if (station.isEmpty()) station = lines.firstOrNull()?.take(40) ?: ""
 
-        val liters = litersRx.findAll(text).mapNotNull { toD(it.groupValues[1]) }
-            .firstOrNull { it in 1.0..300.0 } ?: 0.0
-
         var total = near(lines, totalWords, noVatWords + paidWords).maxOrNull() ?: 0.0
         if (total == 0.0) {
             total = lines.filter { l -> paidWords.none { l.lowercase().contains(it) } }
                 .flatMap { numbers(it) }.filter { it < 100000.0 }.maxOrNull() ?: 0.0
         }
+
+        val liters = findLiters(text, total)
 
         var noVat = near(lines, noVatWords, emptyList()).filter { total == 0.0 || it < total }.maxOrNull() ?: 0.0
         // U pohonných hmot je DPH 21 %; když základ na účtence nejde přečíst, dopočítá se.
