@@ -1197,11 +1197,11 @@ class MainActivity : Activity() {
             m.setPadding(dp(12), dp(10), dp(12), dp(10))
             body.addView(m, lp(MATCH, WRAP, 0f, 14))
         }
-        // předvyplní se dnešek, pokud je zobrazený aktuální měsíc, jinak první den zobrazeného měsíce
+        // předvyplní se dnešní datum a aktuální čas
         val today = Calendar.getInstance()
         val sameMonth = today.get(Calendar.YEAR) == cal.get(Calendar.YEAR) && today.get(Calendar.MONTH) == cal.get(Calendar.MONTH)
-        val date = field(dmy.format(if (sameMonth) today.time else cal.time), "např. 3.10.2026", "0123456789.")
-        val from = field("", "např. 7:30", "0123456789:.")
+        val date = field(dmy.format(today.time), "např. 3.10.2026", "0123456789.")
+        val from = field(timeFmt.format(today.time), "např. 7:30", "0123456789:.")
         val to = field("", "např. 8:15", "0123456789:.")
         // start se předvyplní výchozím místem vozidla
         val homeOf = { id: Long -> db.vehicle(id)?.home ?: "" }
@@ -1209,6 +1209,25 @@ class MainActivity : Activity() {
         val end = field("", "např. Prostějov, Průmyslová", null)
         val km = field("", "např. 21,4", "0123456789,.")
         val note = field("", "Např. účel cesty, zákazník", null)
+
+        // Konec jízdy se předvyplňuje ze začátku a ujetých km při průměrné rychlosti 90 km/h.
+        val fillEnd = {
+            val dist = num(km)
+            val parts = from.text.toString().trim().replace('.', ':').split(":")
+            val h = parts.getOrNull(0)?.toIntOrNull()
+            val m = parts.getOrNull(1)?.toIntOrNull()
+            if (dist > 0.0 && h != null && m != null && h in 0..23 && m in 0..59) {
+                val endMin = minOf(h * 60 + m + maxOf(1, Math.round(dist / 90.0 * 60.0).toInt()), 23 * 60 + 59)
+                to.setText(String.format(Locale.US, "%d:%02d", endMin / 60, endMin % 60))
+            }
+        }
+        val watcher = object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { fillEnd() }
+        }
+        km.addTextChangedListener(watcher)
+        from.addTextChangedListener(watcher)
 
         body.addView(tv("Datum", 14f, INK, true), lp(MATCH, WRAP, 0f, 14))
         body.addView(date, lp(MATCH, WRAP, 0f, 6))
@@ -1223,7 +1242,11 @@ class MainActivity : Activity() {
         body.addView(tv("Cíl", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
         body.addView(end, lp(MATCH, WRAP, 0f, 6))
         body.addView(
-            btn("Vybrat cíl z adresáře", Color.WHITE, INK, LINE) { contactDialog { c -> end.setText(c.place) } },
+            btn("Vybrat cíl z adresáře", Color.WHITE, INK, LINE) { contactDialog { c ->
+                end.setText(c.place)
+                // km se předvyplní vzdáleností po dálnici; konec jízdy se z nich dopočítá
+                if (c.kmHighway > 0.0) km.setText(String.format(cs, "%.1f", c.kmHighway))
+            } },
             lp(MATCH, WRAP, 0f, 6)
         )
         body.addView(tv("Ujeté km", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
