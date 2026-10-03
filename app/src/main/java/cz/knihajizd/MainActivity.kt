@@ -605,44 +605,49 @@ class MainActivity : Activity() {
 
     // ---------- adresář cílů ----------
 
-    /** Výběr firmy z adresáře s hledáním podle názvu, ulice nebo města. */
+    /** Výběr firmy z adresáře s hledáním podle názvu, ulice nebo města; seznam jde posouvat přes všechny položky. */
     private fun contactDialog(onPick: (Contact) -> Unit) {
         val all = db.contacts()
         if (all.isEmpty()) { toast("Adresář cílů je prázdný. Nahrajete ho v nastavení ze souboru CSV."); return }
         val search = field("", "hledat firmu nebo město", null)
-        val list = vbox()
-        val wrap = vbox()
-        wrap.setPadding(dp(20), dp(8), dp(20), 0)
-        wrap.addView(search)
-        val sc = ScrollView(this)
-        sc.addView(list)
-        wrap.addView(sc, lp(MATCH, dp(320), 0f, 8))
-        val dialog = AlertDialog.Builder(this).setTitle("Vybrat cíl z adresáře").setView(wrap)
-            .setNegativeButton("Zrušit", null).create()
-        val fill = { q: String ->
-            list.removeAllViews()
-            val needle = q.trim().lowercase()
-            val hits = all.filter { needle.isEmpty() || (it.name + " " + it.street + " " + it.city).lowercase().contains(needle) }
-            for (c in hits.take(60)) {
+        var hits = all
+        val km = { v: Double -> if (v > 0.0) f1(v) + " km" else "neuvedeno" }
+        // ListView vykresluje jen viditelné řádky, takže zvládne i dlouhý adresář
+        val adapter = object : android.widget.BaseAdapter() {
+            override fun getCount() = hits.size
+            override fun getItem(position: Int): Any = hits[position]
+            override fun getItemId(position: Int) = hits[position].id
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                val c = hits[position]
                 val row = vbox()
                 row.setPadding(0, dp(10), 0, dp(10))
                 row.addView(tv(c.name, 15f, INK, true))
                 if (c.address.isNotBlank()) row.addView(tv(c.address, 13f, MUTED))
-                val km = { v: Double -> if (v > 0.0) f1(v) + " km" else "neuvedeno" }
                 row.addView(tv("Po dálnici: " + km(c.kmHighway) + "  ·  mimo dálnice: " + km(c.kmOther), 13f, INK))
-                row.isClickable = true
-                row.setOnClickListener { dialog.dismiss(); onPick(c) }
-                list.addView(row)
+                return row
             }
-            if (hits.isEmpty()) list.addView(tv("Nic nenalezeno.", 14f, MUTED))
-            if (hits.size > 60) list.addView(tv("Zobrazeno prvních 60 z " + hits.size + ". Upřesněte hledání.", 13f, MUTED))
         }
+        val list = android.widget.ListView(this)
+        list.adapter = adapter
+        val count = tv("Firem: " + all.size, 12f, MUTED)
+        val wrap = vbox()
+        wrap.setPadding(dp(20), dp(8), dp(20), 0)
+        wrap.addView(search)
+        wrap.addView(count, lp(MATCH, WRAP, 0f, 6))
+        wrap.addView(list, lp(MATCH, dp(360), 0f, 4))
+        val dialog = AlertDialog.Builder(this).setTitle("Vybrat cíl z adresáře").setView(wrap)
+            .setNegativeButton("Zrušit", null).create()
+        list.setOnItemClickListener { _, _, position, _ -> dialog.dismiss(); onPick(hits[position]) }
         search.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: android.text.Editable?) { fill(s?.toString() ?: "") }
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val needle = (s?.toString() ?: "").trim().lowercase()
+                hits = all.filter { needle.isEmpty() || (it.name + " " + it.street + " " + it.city).lowercase().contains(needle) }
+                count.text = if (needle.isEmpty()) "Firem: " + all.size else "Nalezeno: " + hits.size + " z " + all.size
+                adapter.notifyDataSetChanged()
+            }
         })
-        fill("")
         dialog.show()
     }
 
