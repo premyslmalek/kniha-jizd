@@ -41,7 +41,7 @@ object Export {
 
     /** Jízdy a tankování v jednom časovém sledu: (klíč řazení, jízda nebo účtenka). */
     private fun merged(trips: List<Trip>, fuel: List<Fuel>): List<Pair<Long, Any>> =
-        (trips.map { Pair<Long, Any>(it.startTs, it) } + fuel.map { Pair<Long, Any>(dayEnd(it.ts), it) })
+        (trips.map { Pair<Long, Any>(it.startTs, it) } + fuel.map { Pair<Long, Any>(it.ts, it) })
             .sortedBy { it.first }
 
     /** CSV se středníky a v kódování, které Excel otevře správně i s češtinou. */
@@ -62,7 +62,7 @@ object Export {
             ) else {
                 val f = item as Fuel
                 listOf(
-                    d.format(Date(f.ts)), plates[f.vehicleId] ?: "", "Tankování", "", "", "", "", "", "", "", "", "", "", "", "",
+                    d.format(Date(f.ts)), plates[f.vehicleId] ?: "", "Tankování", h.format(Date(f.ts)), "", "", "", "", "", "", "", "", "", "", "",
                     f.place, money(f.liters), money(f.priceVat), money(f.priceNoVat)
                 )
             }
@@ -143,7 +143,7 @@ object Export {
                 // Tankování: jeden tučný řádek přes šířku tabulky pod jízdami daného dne.
                 page.canvas.drawText(d.format(Date(f.ts)), M, y, bold)
                 page.canvas.drawText(
-                    "Tankování" + (plates[f.vehicleId]?.let { " ($it)" } ?: "") + ": " + f.place.ifBlank { "neuvedeno" } + "   " + money(f.liters) + " l   " +
+                    h.format(Date(f.ts)) + "   Tankování" + (plates[f.vehicleId]?.let { " ($it)" } ?: "") + ": " + f.place.ifBlank { "neuvedeno" } + "   " + money(f.liters) + " l   " +
                         money(f.priceVat) + " Kč vč. DPH   " + money(f.priceNoVat) + " Kč bez DPH",
                     M + cols[0].second, y, bold
                 )

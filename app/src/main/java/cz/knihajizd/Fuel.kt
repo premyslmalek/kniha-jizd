@@ -83,6 +83,7 @@ object Receipts {
         return litersRx.findAll(text).mapNotNull { toD(it.groupValues[1]) }.firstOrNull { it in 1.0..300.0 } ?: 0.0
     }
 
+    private val timeRx = Regex("(?<![\\d:.,])([01]?\\d|2[0-3]):([0-5]\\d)(?::[0-5]\\d)?(?![\\d:])")
     private val pscRx = Regex("\\b\\d{3}\\s?\\d{2}\\s+\\p{L}[\\p{L} .\\-]+")
     private val streetRx = Regex("^[\\p{L}][\\p{L} .\\-]*\\s\\d+[\\w/]*$")
     private val siteWords = listOf("provozov", "čerpací stanice", "cerpaci stanice", "čs ", "stanice")
@@ -117,8 +118,13 @@ object Receipts {
             var y = dm.groupValues[3].toInt()
             if (y < 100) y += 2000
             if (d in 1..31 && m in 1..12 && y in 2000..2100) {
+                // Čas bývá hned za datem; když tam není, vezme se první čas na účtence, jinak poledne.
+                val tail = text.substring(dm.range.last + 1, minOf(text.length, dm.range.last + 25))
+                val tm = timeRx.find(tail) ?: timeRx.find(text)
+                val hh = tm?.groupValues?.get(1)?.toInt() ?: 12
+                val mi = tm?.groupValues?.get(2)?.toInt() ?: 0
                 val c = Calendar.getInstance()
-                c.clear(); c.set(y, m - 1, d, 12, 0, 0)
+                c.clear(); c.set(y, m - 1, d, hh, mi, 0)
                 ts = c.timeInMillis
             }
         }

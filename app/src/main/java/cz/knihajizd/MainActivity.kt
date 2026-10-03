@@ -715,7 +715,7 @@ class MainActivity : Activity() {
         c.setPadding(dp(14), dp(12), dp(14), dp(12))
         val top = hbox()
         top.gravity = Gravity.CENTER_VERTICAL
-        top.addView(tv("TANKOVÁNÍ  ·  " + vehShort(f.vehicleId), 12f, GREEN, true), lp(0, WRAP, 1f))
+        top.addView(tv(timeFmt.format(Date(f.ts)) + "  ·  TANKOVÁNÍ  ·  " + vehShort(f.vehicleId), 12f, GREEN, true), lp(0, WRAP, 1f))
         val amount = tv(money(f.priceVat) + " Kč", 15f, GREEN, true)
         top.addView(amount)
         c.addView(top)
@@ -1340,7 +1340,7 @@ class MainActivity : Activity() {
             val c = card()
             val top = hbox()
             top.addView(tv(f.place.ifBlank { "Neuvedeno" }, 16f, INK, true), lp(0, WRAP, 1f))
-            top.addView(tv(dmy.format(Date(f.ts)), 13f, MUTED))
+            top.addView(tv(dmy.format(Date(f.ts)) + " " + timeFmt.format(Date(f.ts)), 13f, MUTED))
             c.addView(top)
             c.addView(
                 tv(String.format(cs, "%.2f", f.liters) + " l  ·  " + money(f.priceVat) + " Kč vč. DPH", 15f),
@@ -1531,6 +1531,7 @@ class MainActivity : Activity() {
             body.addView(tv("Fotka účtenky je uložená u záznamu. Klepnutím ji zvětšíte.", 12f, MUTED), lp(MATCH, WRAP, 0f, 4))
         }
         val date = field(dmy.format(Date(if (f.ts > 0) f.ts else System.currentTimeMillis())), "např. 3.10.2026", "0123456789.")
+        val time = field(timeFmt.format(Date(if (f.ts > 0) f.ts else System.currentTimeMillis())), "např. 14:35", "0123456789:.")
         val station = field(f.station, "např. MOL", null)
         val address = field(f.address, "např. Olomoucká 10, 796 01 Prostějov", null)
         val liters = field(dec(f.liters), "např. 42,15", "0123456789,.")
@@ -1544,8 +1545,12 @@ class MainActivity : Activity() {
         fvBtn.isClickable = true
         fvBtn.setOnClickListener { vehicleDialog(false) { fVid = it; fvBtn.text = vehLabel(it) + "  ▾" } }
         body.addView(fvBtn, lp(MATCH, WRAP, 0f, 6))
-        body.addView(tv("Datum", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
-        body.addView(date, lp(MATCH, WRAP, 0f, 6))
+        val when2 = hbox()
+        val dc = vbox(); dc.addView(tv("Datum", 14f, INK, true)); dc.addView(date, lp(MATCH, WRAP, 0f, 6))
+        val tc = vbox(); tc.addView(tv("Čas", 14f, INK, true)); tc.addView(time, lp(MATCH, WRAP, 0f, 6))
+        when2.addView(dc, lp(0, WRAP, 1.4f))
+        when2.addView(tc, lp(0, WRAP, 1f, 0, 8))
+        body.addView(when2, lp(MATCH, WRAP, 0f, 12))
         body.addView(tv("Čerpací stanice", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
         body.addView(station, lp(MATCH, WRAP, 0f, 6))
         body.addView(tv("Adresa čerpací stanice", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
@@ -1566,17 +1571,18 @@ class MainActivity : Activity() {
 
         body.addView(
             btn("Uložit účtenku", GREEN, Color.WHITE) {
-                val fmt = SimpleDateFormat("d.M.yyyy", cs)
+                val fmt = SimpleDateFormat("d.M.yyyy H:mm", cs)
                 fmt.isLenient = false
-                val d = try { fmt.parse(date.text.toString().trim().replace(" ", "")) } catch (e: Exception) { null }
+                val d = try {
+                    fmt.parse(date.text.toString().trim().replace(" ", "") + " " + time.text.toString().trim().replace('.', ':'))
+                } catch (e: Exception) { null }
                 val l = num(liters)
                 val pv = num(vat)
-                if (d == null) toast("Datum zadejte ve tvaru 3.10.2026.")
+                if (d == null) toast("Datum zadejte ve tvaru 3.10.2026 a čas ve tvaru 14:35.")
                 else if (l <= 0.0 || pv <= 0.0) toast("Vyplňte počet litrů a cenu vč. DPH.")
                 else {
                     val c = Calendar.getInstance()
                     c.time = d
-                    c.set(Calendar.HOUR_OF_DAY, 12)
                     db.fuelSave(Fuel(f.id, c.timeInMillis, station.text.toString().trim(), l, pv, num(noVat), f.photo, fVid, address.text.toString().trim()))
                     // přehled účtenek se přepne na měsíc uložené účtenky
                     cal.set(Calendar.YEAR, c.get(Calendar.YEAR))
