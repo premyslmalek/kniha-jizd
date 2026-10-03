@@ -1244,8 +1244,13 @@ class MainActivity : Activity() {
         body.addView(
             btn("Vybrat cíl z adresáře", Color.WHITE, INK, LINE) { contactDialog { c ->
                 end.setText(c.place)
-                // km se předvyplní vzdáleností po dálnici; konec jízdy se z nich dopočítá
-                if (c.kmHighway > 0.0) km.setText(String.format(cs, "%.1f", c.kmHighway))
+                // km se předvyplní jako cesta tam a zpět: dvojnásobek vzdálenosti po dálnici,
+                // a když ta chybí, mimo dálnice; konec jízdy se z nich dopočítá
+                val oneWay = if (c.kmHighway > 0.0) c.kmHighway else c.kmOther
+                if (oneWay > 0.0) {
+                    km.setText(String.format(cs, "%.1f", oneWay * 2.0))
+                    if (note.text.toString().isBlank()) note.setText(ROUND_NOTE)
+                }
             } },
             lp(MATCH, WRAP, 0f, 6)
         )
