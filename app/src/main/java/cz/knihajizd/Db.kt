@@ -36,7 +36,7 @@ const val ROUND_NOTE = "TAM A ZPĚT"
 class Reading(val ym: String, val km: Int, val ts: Long)
 
 /** Vozidlo: název, SPZ a stav tachometru před první jízdou zaznamenanou v aplikaci. */
-data class Vehicle(val id: Long, val name: String, val plate: String, val odoStart: Int) {
+data class Vehicle(val id: Long, val name: String, val plate: String, val odoStart: Int, val home: String = "") {
     val label: String get() = if (plate.isBlank()) name else "$name · $plate"
     val short: String get() = if (plate.isBlank()) name else plate
 }
@@ -93,7 +93,7 @@ class Prefs(ctx: Context) {
         set(v) = sp.edit().putInt("stopMin", v).apply()
 }
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 5) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 6) {
     private val appCtx = ctx.applicationContext
 
     /** Vozidlo, pro které se zobrazují přehledy; 0 = všechna vozidla. */
@@ -116,7 +116,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
 
     /** Vozidla a skutečné stavy tachometru po vozidlech; založí se první vozidlo, aby aplikace měla kam zapisovat. */
     private fun createVehicles(db: SQLiteDatabase, odoStart: Int) {
-        db.execSQL("CREATE TABLE vehicles(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, plate TEXT, odo_start INTEGER)")
+        db.execSQL("CREATE TABLE vehicles(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, plate TEXT, odo_start INTEGER, home TEXT)")
         db.execSQL("INSERT INTO vehicles(id, name, plate, odo_start) VALUES(1, 'Moje vozidlo', '', $odoStart)")
         db.execSQL("CREATE TABLE odo2(vehicle_id INTEGER, ym TEXT, km INTEGER, ts INTEGER, PRIMARY KEY(vehicle_id, ym))")
     }
@@ -196,6 +196,9 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
             db.execSQL("ALTER TABLE fuel ADD COLUMN vehicle_id INTEGER DEFAULT 1")
             db.execSQL("INSERT INTO odo2 SELECT 1, ym, km, ts FROM odo")
             db.execSQL("DROP TABLE odo")
+        } else if (oldVersion < 6) {
+            // výchozí místo vozidla (kde je garážované)
+            db.execSQL("ALTER TABLE vehicles ADD COLUMN home TEXT")
         }
     }
 
@@ -228,8 +231,8 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
 
     fun vehicles(): List<Vehicle> {
         val out = ArrayList<Vehicle>()
-        readableDatabase.rawQuery("SELECT id, name, plate, odo_start FROM vehicles ORDER BY id", null).use { c ->
-            while (c.moveToNext()) out.add(Vehicle(c.getLong(0), c.getString(1) ?: "", c.getString(2) ?: "", c.getInt(3)))
+        readableDatabase.rawQuery("SELECT id, name, plate, odo_start, home FROM vehicles ORDER BY id", null).use { c ->
+            while (c.moveToNext()) out.add(Vehicle(c.getLong(0), c.getString(1) ?: "", c.getString(2) ?: "", c.getInt(3), c.getString(4) ?: ""))
         }
         return out
     }
@@ -238,7 +241,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
 
     fun vehicleSave(v: Vehicle): Long {
         val cv = ContentValues()
-        cv.put("name", v.name); cv.put("plate", v.plate); cv.put("odo_start", v.odoStart)
+        cv.put("name", v.name); cv.put("plate", v.plate); cv.put("odo_start", v.odoStart); cv.put("home", v.home)
         if (v.id == 0L) return writableDatabase.insert("vehicles", null, cv)
         writableDatabase.update("vehicles", cv, "id = ?", arrayOf(v.id.toString()))
         return v.id
@@ -257,38 +260,52 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
         writableDatabase.delete("vehicles", "id = ?", arrayOf(id.toString()))
     }
 
-    /** Vrací se poslední jízda tam, odkud první vyjela? Rozhodují GPS souřadnice, bez nich názvy míst. */
-    fun isRoundTrip(first: Trip, last: Trip): Boolean {
-        if (Places.known(first.sLat, first.sLon) && Places.known(last.eLat, last.eLon)) {
+    /** Jsou dvě místa totožná? Rozhodují GPS souřadnice (do 500 m), bez nich shodný název. */
+    private fun samePlace(lat1: Double, lon1: Double, name1: String, lat2: Double, lon2: Double, name2: String): Boolean {
+        if (Places.known(lat1, lon1) && Places.known(lat2, lon2)) {
             val r = FloatArray(1)
-            android.location.Location.distanceBetween(first.sLat, first.sLon, last.eLat, last.eLon, r)
+            android.location.Location.distanceBetween(lat1, lon1, lat2, lon2, r)
             return r[0] < 500f
         }
-        return first.startPlace.trim().equals(last.endPlace.trim(), ignoreCase = true)
+        return name1.trim().equals(name2.trim(), ignoreCase = true)
     }
 
     /**
-     * Sloučí jízdy do jedné; km se sečtou, čas je od začátku první do konce poslední.
-     * Cesta tam a zpět: "od" je výjezd, "do" je cíl první jízdy a poznámka "TAM A ZPĚT" vysvětluje vyšší km.
-     * Jinak na sebe navazující jízdy: "od" z první, "do" z poslední.
+     * Sloučit lze jen dvě jízdy téhož vozidla ze stejného dne, které tvoří cestu tam a zpět:
+     * start první = cíl druhé a cíl první = start druhé. Vrací důvod, proč to nejde, nebo null.
+     */
+    fun mergeProblem(ids: Collection<Long>): String? {
+        val trips = ids.mapNotNull { get(it) }.sortedBy { it.startTs }
+        if (trips.size != 2) return "Sloučit lze právě dvě jízdy."
+        val a = trips[0]
+        val b = trips[1]
+        val ca = Calendar.getInstance(); ca.timeInMillis = a.startTs
+        val cb = Calendar.getInstance(); cb.timeInMillis = b.startTs
+        val sameDay = ca.get(Calendar.YEAR) == cb.get(Calendar.YEAR) && ca.get(Calendar.DAY_OF_YEAR) == cb.get(Calendar.DAY_OF_YEAR)
+        val back = samePlace(a.sLat, a.sLon, a.startPlace, b.eLat, b.eLon, b.endPlace) &&
+            samePlace(a.eLat, a.eLon, a.endPlace, b.sLat, b.sLon, b.startPlace)
+        if (a.vehicleId != b.vehicleId || !sameDay || !back) return "Tyto dvě jízdy nejdou sloučit."
+        return null
+    }
+
+    /**
+     * Sloučí cestu tam a zpět do jedné jízdy: "od" je výjezd, "do" je cíl první jízdy, km se sečtou,
+     * čas je od začátku první do konce druhé a poznámka "TAM A ZPĚT" vysvětluje vyšší km.
      */
     fun mergeTrips(ids: Collection<Long>): Boolean {
+        if (mergeProblem(ids) != null) return false
         val trips = ids.mapNotNull { get(it) }.sortedBy { it.startTs }
-        if (trips.size < 2) return false
         val first = trips.first()
         val last = trips.last()
-        val round = isRoundTrip(first, last)
-        val dest = if (round) first else last
-        val notes = (if (round) listOf(ROUND_NOTE) else emptyList()) + trips.map { it.note }.filter { it.isNotBlank() }
+        val notes = listOf(ROUND_NOTE) + trips.map { it.note }.filter { it.isNotBlank() }
         val w = writableDatabase
         w.beginTransaction()
         try {
             val v = ContentValues()
-            v.put("end_ts", last.endTs); v.put("end_lat", dest.eLat); v.put("end_lon", dest.eLon)
-            v.put("end_place", dest.endPlace); v.put("dist_m", trips.sumOf { it.distM })
+            v.put("end_ts", last.endTs); v.put("dist_m", trips.sumOf { it.distM })
             v.put("note", notes.distinct().joinToString("; "))
             w.update("trips", v, "id = ?", arrayOf(first.id.toString()))
-            for (t in trips.drop(1)) w.delete("trips", "id = ?", arrayOf(t.id.toString()))
+            w.delete("trips", "id = ?", arrayOf(last.id.toString()))
             w.setTransactionSuccessful()
         } finally {
             w.endTransaction()

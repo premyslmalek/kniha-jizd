@@ -338,6 +338,8 @@ class MainActivity : Activity() {
         wrap.addView(name)
         wrap.addView(plate, lp(MATCH, WRAP, 0f, 8))
         wrap.addView(odo, lp(MATCH, WRAP, 0f, 8))
+        val home = field(v?.home ?: "", "výchozí místo – kde vůz garážuje", null)
+        wrap.addView(home, lp(MATCH, WRAP, 0f, 8))
         wrap.addView(tv("Počáteční stav je stav tachometru před první jízdou tohoto vozu zaznamenanou v aplikaci.", 12f, MUTED), lp(MATCH, WRAP, 0f, 6))
         val b = AlertDialog.Builder(this)
             .setTitle(if (v == null) "Nové vozidlo" else "Úprava vozidla")
@@ -347,7 +349,7 @@ class MainActivity : Activity() {
                 if (n.isEmpty()) toast("Vozidlo nebylo uloženo – zadejte název.")
                 else {
                     db.vehicleSave(
-                        Vehicle(v?.id ?: 0L, n, plate.text.toString().trim().uppercase(), odo.text.toString().trim().toIntOrNull() ?: 0)
+                        Vehicle(v?.id ?: 0L, n, plate.text.toString().trim().uppercase(), odo.text.toString().trim().toIntOrNull() ?: 0, home.text.toString().trim())
                     )
                     saveSettings(); render()
                 }
@@ -562,10 +564,10 @@ class MainActivity : Activity() {
             // režim výběru: místo spodní nabídky akce nad vybranými jízdami
             bottom.removeAllViews()
             bottom.addView(btn("Zrušit výběr", Color.WHITE, INK, LINE) { selected.clear(); render() }, lp(0, WRAP, 1f))
-            val can = selected.size >= 2
+            val can = selected.size == 2
             bottom.addView(
                 btn("Sloučit jízdy (" + selected.size + ")", if (can) BLUE else GREY_BG, if (can) Color.WHITE else MUTED) {
-                    if (!can) toast("Vyberte aspoň dvě jízdy.") else mergeDialog()
+                    if (!can) toast("Sloučit lze právě dvě jízdy.") else mergeDialog()
                 }, lp(0, WRAP, 1.4f, 0, 8)
             )
         }
@@ -575,24 +577,20 @@ class MainActivity : Activity() {
 
     /** Potvrzení a provedení sloučení vybraných jízd. */
     private fun mergeDialog() {
+        val problem = db.mergeProblem(selected.toList())
+        if (problem != null) { toast(problem); return }
         val trips = selected.mapNotNull { db.get(it) }.sortedBy { it.startTs }
-        if (trips.size < 2) return
-        if (trips.map { it.vehicleId }.distinct().size > 1) {
-            toast("Sloučit lze jen jízdy stejného vozidla.")
-            return
-        }
         val first = trips.first()
         val last = trips.last()
-        val round = db.isRoundTrip(first, last)
-        val msg = first.startPlace + " → " + (if (round) first.endPlace else last.endPlace) + "\n" +
+        val msg = first.startPlace + " → " + first.endPlace + "\n" +
             dateFmt.format(Date(first.startTs)) + " " + timeFmt.format(Date(first.startTs)) + " – " + timeFmt.format(Date(last.endTs)) + "\n" +
-            f1(trips.sumOf { it.km }) + " km" + (if (round) "\nPoznámka: " + ROUND_NOTE else "") + "\n\n" +
+            f1(trips.sumOf { it.km }) + " km\nPoznámka: " + ROUND_NOTE + "\n\n" +
             "Původní jízdy se nahradí jednou sloučenou. Akci nelze vrátit."
         AlertDialog.Builder(this)
-            .setTitle("Sloučit " + trips.size + " jízdy do jedné?")
+            .setTitle("Sloučit dvě jízdy do jedné?")
             .setMessage(msg)
             .setPositiveButton("Sloučit") { _, _ ->
-                db.mergeTrips(selected.toList())
+                if (!db.mergeTrips(selected.toList())) toast("Tyto dvě jízdy nejdou sloučit.")
                 selected.clear()
                 render()
             }
@@ -867,7 +865,10 @@ class MainActivity : Activity() {
             val c = card()
             c.addView(tv(v.label + (if (isDef) "  ·  výchozí" else ""), 16f, INK, true))
             c.addView(
-                tv(if (v.odoStart > 0) "Počáteční stav tachometru: " + km0(v.odoStart.toLong()) + " km" else "Počáteční stav tachometru není zadán", 13f, MUTED),
+                tv(
+                    (if (v.odoStart > 0) "Počáteční stav tachometru: " + km0(v.odoStart.toLong()) + " km" else "Počáteční stav tachometru není zadán") +
+                        "\nVýchozí místo: " + v.home.ifBlank { "není zadáno" }, 13f, MUTED
+                ),
                 lp(MATCH, WRAP, 0f, 2)
             )
             val acts = hbox()
@@ -1038,7 +1039,9 @@ class MainActivity : Activity() {
         val date = field(dmy.format(if (sameMonth) today.time else cal.time), "např. 3.10.2026", "0123456789.")
         val from = field("", "např. 7:30", "0123456789:.")
         val to = field("", "např. 8:15", "0123456789:.")
-        val start = field("", "např. Sněhotice", null)
+        // start se předvyplní výchozím místem vozidla
+        val homeOf = { id: Long -> db.vehicle(id)?.home ?: "" }
+        val start = field(homeOf(if (viewVehicle != 0L) viewVehicle else prefs.defaultVehicle), "např. Sněhotice", null)
         val end = field("", "např. Prostějov, Průmyslová", null)
         val km = field("", "např. 21,4", "0123456789,.")
         val note = field("", "Např. účel cesty, zákazník", null)
@@ -1065,7 +1068,15 @@ class MainActivity : Activity() {
         vBtn.setPadding(dp(12), dp(12), dp(12), dp(12))
         vBtn.isClickable = true
         // výběr bez překreslení obrazovky, aby se neztratily rozepsané údaje
-        vBtn.setOnClickListener { vehicleDialog(false) { vid = it; vBtn.text = vehLabel(it) + "  ▾" } }
+        vBtn.setOnClickListener {
+            vehicleDialog(false) {
+                // start se přepíše jen tehdy, když ho uživatel sám nezměnil
+                val cur = start.text.toString().trim()
+                if (cur.isEmpty() || cur == homeOf(vid)) start.setText(homeOf(it))
+                vid = it
+                vBtn.text = vehLabel(it) + "  ▾"
+            }
+        }
         body.addView(vBtn, lp(MATCH, WRAP, 0f, 6))
 
         body.addView(tv("Status jízdy", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
