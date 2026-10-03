@@ -114,6 +114,29 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
         return out
     }
 
+    /** Všechny jízdy a účtenky v časovém rozmezí <from, to) – pro grafy. */
+    fun tripsRange(from: Long, to: Long): List<Trip> {
+        val out = ArrayList<Trip>()
+        readableDatabase.rawQuery(
+            "SELECT $cols FROM trips WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts",
+            arrayOf(from.toString(), to.toString())
+        ).use { c -> while (c.moveToNext()) out.add(read(c)) }
+        return out
+    }
+
+    fun fuelRange(from: Long, to: Long): List<Fuel> {
+        val out = ArrayList<Fuel>()
+        readableDatabase.rawQuery(
+            "SELECT id, ts, station, liters, price_vat, price_novat, photo FROM fuel WHERE ts >= ? AND ts < ? ORDER BY ts",
+            arrayOf(from.toString(), to.toString())
+        ).use { c ->
+            while (c.moveToNext()) out.add(
+                Fuel(c.getLong(0), c.getLong(1), c.getString(2) ?: "", c.getDouble(3), c.getDouble(4), c.getDouble(5), c.getString(6) ?: "")
+            )
+        }
+        return out
+    }
+
     fun fuelSave(f: Fuel) {
         val v = ContentValues()
         v.put("ts", f.ts); v.put("station", f.station); v.put("liters", f.liters)

@@ -81,6 +81,8 @@ class MainActivity : Activity() {
     private var fuelDraft = Fuel(0, 0, "", 0.0, 0.0, 0.0)
     private var fuelMsg = ""
     private var cameraUri: Uri? = null
+    private var dashYearly = false
+    private var dashYear = Calendar.getInstance().get(Calendar.YEAR)
 
     private var statusView: TextView? = null
     private var noteEdit: EditText? = null
@@ -249,6 +251,7 @@ class MainActivity : Activity() {
             "detail" -> detailScreen()
             "settings" -> settingsScreen()
             "tripNew" -> tripNewScreen()
+            "dash" -> dashScreen()
             "fuel" -> fuelScreen()
             "fuelEdit" -> fuelEditScreen()
             else -> listScreen()
@@ -433,9 +436,16 @@ class MainActivity : Activity() {
         bottom.setBackgroundColor(Color.WHITE)
         bottom.setPadding(dp(16), dp(10), dp(16), dp(10))
         bottom.setPadding(dp(12), dp(10), dp(12), dp(10))
-        bottom.addView(btn("Účtenky", Color.WHITE, INK, LINE) { screen = "fuel"; render() }, lp(0, WRAP, 1f))
-        bottom.addView(btn("Export", BLUE, Color.WHITE) { exportDialog() }, lp(0, WRAP, 1f, 0, 8))
-        bottom.addView(btn("Nastavení", Color.WHITE, INK, LINE) { screen = "settings"; render() }, lp(0, WRAP, 1f, 0, 8))
+        val navBtn = { label: String, fill: Int, fg: Int, stroke: Int?, go: () -> Unit ->
+            val b = btn(label, fill, fg, stroke, go)
+            b.textSize = 13f
+            b.setPadding(dp(2), dp(14), dp(2), dp(14))
+            b
+        }
+        bottom.addView(navBtn("Grafy", Color.WHITE, INK, LINE) { screen = "dash"; render() }, lp(0, WRAP, 1f))
+        bottom.addView(navBtn("Účtenky", Color.WHITE, INK, LINE) { screen = "fuel"; render() }, lp(0, WRAP, 1f, 0, 6))
+        bottom.addView(navBtn("Export", BLUE, Color.WHITE, null) { exportDialog() }, lp(0, WRAP, 1f, 0, 6))
+        bottom.addView(navBtn("Nastavení", Color.WHITE, INK, LINE) { screen = "settings"; render() }, lp(0, WRAP, 1.3f, 0, 6))
         page.addView(bottom)
         return page
     }
@@ -713,6 +723,116 @@ class MainActivity : Activity() {
             }, lp(MATCH, WRAP, 0f, 10)
         )
         body.addView(perm, lp(MATCH, WRAP, 0f, 8))
+
+        val scroll = ScrollView(this)
+        scroll.addView(body)
+        page.addView(scroll, lp(MATCH, 0, 1f))
+        return page
+    }
+
+    // ---------- grafy ----------
+
+    /** Přehled ujetých km a nákladů na palivo: po měsících zvoleného roku, nebo po letech. */
+    private fun dashScreen(): View {
+        val page = vbox()
+        page.setBackgroundColor(GROUND)
+        page.setPadding(dp(16), dp(16), dp(16), dp(16))
+        page.addView(topBar("Grafy"))
+        val body = vbox()
+
+        val toggle = hbox()
+        val tBtn = { label: String, on: Boolean, go: () -> Unit ->
+            btn(label, if (on) INK else Color.WHITE, if (on) Color.WHITE else INK, if (on) INK else LINE, go)
+        }
+        toggle.addView(tBtn("Po měsících", !dashYearly) { dashYearly = false; render() }, lp(0, WRAP, 1f))
+        toggle.addView(tBtn("Po letech", dashYearly) { dashYearly = true; render() }, lp(0, WRAP, 1f, 0, 8))
+        body.addView(toggle, lp(MATCH, WRAP, 0f, 14))
+
+        val labels: List<String>
+        val trips: List<Trip>
+        val fuel: List<Fuel>
+        val bucket: (Long) -> Int
+        val c = Calendar.getInstance()
+        if (!dashYearly) {
+            val nav = hbox()
+            nav.gravity = Gravity.CENTER_VERTICAL
+            nav.addView(btn("‹", Color.WHITE, INK, LINE) { dashYear--; render() }, lp(dp(56), WRAP))
+            val yt = tv(dashYear.toString(), 22f, INK, true)
+            yt.gravity = Gravity.CENTER
+            nav.addView(yt, lp(0, WRAP, 1f))
+            nav.addView(btn("›", Color.WHITE, INK, LINE) { dashYear++; render() }, lp(dp(56), WRAP))
+            body.addView(nav, lp(MATCH, WRAP, 0f, 10))
+            val from = db.monthStart(dashYear, 0)
+            val to = db.monthStart(dashYear + 1, 0)
+            trips = db.tripsRange(from, to)
+            fuel = db.fuelRange(from, to)
+            labels = (1..12).map { it.toString() }
+            bucket = { ts -> c.timeInMillis = ts; c.get(Calendar.MONTH) }
+        } else {
+            trips = db.tripsRange(0L, Long.MAX_VALUE)
+            fuel = db.fuelRange(0L, Long.MAX_VALUE)
+            val yearOf = { ts: Long -> c.timeInMillis = ts; c.get(Calendar.YEAR) }
+            val nowYear = Calendar.getInstance().get(Calendar.YEAR)
+            val first = (trips.map { yearOf(it.startTs) } + fuel.map { yearOf(it.ts) } + listOf(nowYear)).min()
+            val start = maxOf(first, nowYear - 9)
+            labels = (start..nowYear).map { it.toString() }
+            bucket = { ts -> yearOf(ts) - start }
+        }
+        val n = labels.size
+        val kmS = DoubleArray(n)
+        val kmO = DoubleArray(n)
+        val cost = DoubleArray(n)
+        for (t in trips) {
+            val i = bucket(t.startTs)
+            if (i in 0 until n) { if (t.status == "S") kmS[i] += t.km else kmO[i] += t.km }
+        }
+        var liters = 0.0
+        for (f in fuel) {
+            val i = bucket(f.ts)
+            if (i in 0 until n) { cost[i] += f.priceVat; liters += f.liters }
+        }
+        val totalS = kmS.sum()
+        val totalO = kmO.sum()
+        val totalKm = totalS + totalO
+        val totalCost = cost.sum()
+
+        val sum = card()
+        sum.addView(tv("Ujeto celkem: " + f1(totalKm) + " km", 16f, INK, true))
+        sum.addView(tv("Služebně " + f1(totalS) + " km  ·  soukromě a nezařazeno " + f1(totalO) + " km", 13f, MUTED), lp(MATCH, WRAP, 0f, 2))
+        sum.addView(tv("Palivo: " + String.format(cs, "%.2f", liters) + " l  ·  " + money(totalCost) + " Kč vč. DPH", 16f, INK, true), lp(MATCH, WRAP, 0f, 10))
+        if (totalKm > 0.0 && liters > 0.0) {
+            sum.addView(
+                tv(
+                    "Orientačně " + String.format(cs, "%.1f", liters / totalKm * 100.0) + " l/100 km  ·  " +
+                        String.format(cs, "%.2f", totalCost / totalKm) + " Kč/km (z natankovaného paliva a zaznamenaných km)",
+                    13f, MUTED
+                ), lp(MATCH, WRAP, 0f, 2)
+            )
+        }
+        body.addView(sum, lp(MATCH, WRAP, 0f, 12))
+
+        val orange = Color.parseColor("#D9822B")
+        val kmCard = card()
+        kmCard.addView(tv("Ujeté km", 15f, INK, true))
+        val legend = hbox()
+        legend.gravity = Gravity.CENTER_VERTICAL
+        val dot = { color: Int -> val v = View(this); v.background = bg(color, 3); v }
+        legend.addView(dot(BLUE), lp(dp(12), dp(12)))
+        legend.addView(tv("služební", 12f, MUTED), lp(WRAP, WRAP, 0f, 0, 6))
+        legend.addView(dot(orange), lp(dp(12), dp(12), 0f, 0, 14))
+        legend.addView(tv("soukromé a nezařazené", 12f, MUTED), lp(WRAP, WRAP, 0f, 0, 6))
+        kmCard.addView(legend, lp(MATCH, WRAP, 0f, 4))
+        kmCard.addView(BarChart(this, labels, kmS, kmO, BLUE, orange), lp(MATCH, dp(190), 0f, 8))
+        body.addView(kmCard, lp(MATCH, WRAP, 0f, 10))
+
+        val costCard = card()
+        costCard.addView(tv("Náklady na palivo (Kč vč. DPH)", 15f, INK, true))
+        costCard.addView(BarChart(this, labels, cost, null, GREEN, GREEN), lp(MATCH, dp(190), 0f, 8))
+        body.addView(costCard, lp(MATCH, WRAP, 0f, 10))
+
+        if (totalKm == 0.0 && totalCost == 0.0) {
+            body.addView(tv("V tomto období zatím nejsou žádné jízdy ani účtenky.", 14f, MUTED), lp(MATCH, WRAP, 0f, 12))
+        }
 
         val scroll = ScrollView(this)
         scroll.addView(body)
