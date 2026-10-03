@@ -248,6 +248,7 @@ class MainActivity : Activity() {
         val v = when (screen) {
             "detail" -> detailScreen()
             "settings" -> settingsScreen()
+            "tripNew" -> tripNewScreen()
             "fuel" -> fuelScreen()
             "fuelEdit" -> fuelEditScreen()
             else -> listScreen()
@@ -403,6 +404,9 @@ class MainActivity : Activity() {
         val ctlLp = lp(MATCH, WRAP, 0f, 12)
         ctlLp.leftMargin = dp(16); ctlLp.rightMargin = dp(16)
         content.addView(ctl, ctlLp)
+        val addLp = lp(MATCH, WRAP, 0f, 10)
+        addLp.leftMargin = dp(16); addLp.rightMargin = dp(16)
+        content.addView(btn("+ Přidat jízdu ručně", Color.WHITE, INK, LINE) { screen = "tripNew"; render() }, addLp)
 
         val list = vbox()
         list.setPadding(dp(16), dp(4), dp(16), dp(16))
@@ -710,6 +714,101 @@ class MainActivity : Activity() {
         )
         body.addView(perm, lp(MATCH, WRAP, 0f, 8))
 
+        val scroll = ScrollView(this)
+        scroll.addView(body)
+        page.addView(scroll, lp(MATCH, 0, 1f))
+        return page
+    }
+
+    // ---------- ruční zadání jízdy ----------
+
+    /** Formulář pro dodatečné zapsání jízdy; uložená jízda se zařadí mezi ostatní podle data a času. */
+    private fun tripNewScreen(): View {
+        val page = vbox()
+        page.setBackgroundColor(GROUND)
+        page.setPadding(dp(16), dp(16), dp(16), dp(16))
+        page.addView(topBar("Nová jízda"))
+
+        val body = vbox()
+        // předvyplní se dnešek, pokud je zobrazený aktuální měsíc, jinak první den zobrazeného měsíce
+        val today = Calendar.getInstance()
+        val sameMonth = today.get(Calendar.YEAR) == cal.get(Calendar.YEAR) && today.get(Calendar.MONTH) == cal.get(Calendar.MONTH)
+        val date = field(dmy.format(if (sameMonth) today.time else cal.time), "např. 3.10.2026", "0123456789.")
+        val from = field("", "např. 7:30", "0123456789:.")
+        val to = field("", "např. 8:15", "0123456789:.")
+        val start = field("", "např. Sněhotice", null)
+        val end = field("", "např. Prostějov, Průmyslová", null)
+        val km = field("", "např. 21,4", "0123456789,.")
+        val note = field("", "Např. účel cesty, zákazník", null)
+
+        body.addView(tv("Datum", 14f, INK, true), lp(MATCH, WRAP, 0f, 14))
+        body.addView(date, lp(MATCH, WRAP, 0f, 6))
+        val times = hbox()
+        val c1 = vbox(); c1.addView(tv("Začátek", 14f, INK, true)); c1.addView(from, lp(MATCH, WRAP, 0f, 6))
+        val c2 = vbox(); c2.addView(tv("Konec", 14f, INK, true)); c2.addView(to, lp(MATCH, WRAP, 0f, 6))
+        times.addView(c1, lp(0, WRAP, 1f))
+        times.addView(c2, lp(0, WRAP, 1f, 0, 8))
+        body.addView(times, lp(MATCH, WRAP, 0f, 12))
+        body.addView(tv("Start", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        body.addView(start, lp(MATCH, WRAP, 0f, 6))
+        body.addView(tv("Cíl", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        body.addView(end, lp(MATCH, WRAP, 0f, 6))
+        body.addView(tv("Ujeté km", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        body.addView(km, lp(MATCH, WRAP, 0f, 6))
+
+        body.addView(tv("Status jízdy", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        var status = "S"
+        val bS = btn("Služební", Color.WHITE, MUTED, LINE) {}
+        val bP = btn("Soukromá", Color.WHITE, MUTED, LINE) {}
+        // přepnutí statusu bez překreslení obrazovky, aby se neztratily rozepsané údaje
+        val paint = {
+            bS.background = bg(if (status == "S") BLUE_BG else Color.WHITE, 14, if (status == "S") BLUE else LINE)
+            bS.setTextColor(if (status == "S") BLUE else MUTED)
+            bP.background = bg(if (status == "P") ORANGE_BG else Color.WHITE, 14, if (status == "P") ORANGE else LINE)
+            bP.setTextColor(if (status == "P") ORANGE else MUTED)
+        }
+        bS.setOnClickListener { status = "S"; paint() }
+        bP.setOnClickListener { status = "P"; paint() }
+        paint()
+        val row = hbox()
+        row.addView(bS, lp(0, WRAP, 1f))
+        row.addView(bP, lp(0, WRAP, 1f, 0, 8))
+        body.addView(row, lp(MATCH, WRAP, 0f, 6))
+
+        body.addView(tv("Poznámka", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        body.addView(note, lp(MATCH, WRAP, 0f, 6))
+
+        body.addView(
+            btn("Uložit jízdu", GREEN, Color.WHITE) {
+                val fmt = SimpleDateFormat("d.M.yyyy H:mm", cs)
+                fmt.isLenient = false
+                val day = date.text.toString().trim().replace(" ", "")
+                val parse = { e: EditText ->
+                    try { fmt.parse(day + " " + e.text.toString().trim().replace('.', ':')) } catch (ex: Exception) { null }
+                }
+                val a = parse(from)
+                val b = parse(to)
+                val dist = num(km)
+                val sp = start.text.toString().trim()
+                val ep = end.text.toString().trim()
+                if (a == null || b == null) toast("Zadejte datum ve tvaru 3.10.2026 a časy ve tvaru 7:30.")
+                else if (b.time <= a.time) toast("Konec jízdy musí být později než začátek.")
+                else if (sp.isEmpty() || ep.isEmpty()) toast("Vyplňte start a cíl.")
+                else if (dist <= 0.0) toast("Vyplňte ujeté kilometry.")
+                else {
+                    val id = db.insert(a.time, b.time, 0.0, 0.0, 0.0, 0.0, sp, ep, dist * 1000.0, status, true)
+                    val n = note.text.toString().trim()
+                    if (n.isNotEmpty()) db.setNote(id, n)
+                    // přehled se přepne na měsíc uložené jízdy
+                    val c = Calendar.getInstance()
+                    c.time = a
+                    cal.set(Calendar.YEAR, c.get(Calendar.YEAR))
+                    cal.set(Calendar.MONTH, c.get(Calendar.MONTH))
+                    screen = "list"
+                    render()
+                }
+            }, lp(MATCH, WRAP, 0f, 18)
+        )
         val scroll = ScrollView(this)
         scroll.addView(body)
         page.addView(scroll, lp(MATCH, 0, 1f))
