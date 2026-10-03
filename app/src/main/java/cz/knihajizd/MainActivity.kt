@@ -624,7 +624,8 @@ class MainActivity : Activity() {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
                 val c = hits[position]
                 val row = vbox()
-                row.setPadding(0, dp(10), 0, dp(10))
+                // vpravo místo pro široký posuvník
+                row.setPadding(0, dp(10), dp(44), dp(10))
                 row.addView(tv(c.name, 15f, INK, true))
                 if (c.address.isNotBlank()) row.addView(tv(c.address, 13f, MUTED))
                 row.addView(tv("Po dálnici: " + km(c.kmHighway) + "  ·  mimo dálnice: " + km(c.kmOther), 13f, INK))
@@ -633,12 +634,16 @@ class MainActivity : Activity() {
         }
         val list = android.widget.ListView(this)
         list.adapter = adapter
+        list.setFastScrollStyle(R.style.WideFastScroll)
+        list.isFastScrollEnabled = true
+        list.isFastScrollAlwaysVisible = true
+        list.isVerticalScrollBarEnabled = false
         val count = tv("Firem: " + all.size, 12f, MUTED)
         val wrap = vbox()
         wrap.setPadding(dp(20), dp(8), dp(20), 0)
         wrap.addView(search)
         wrap.addView(count, lp(MATCH, WRAP, 0f, 6))
-        wrap.addView(list, lp(MATCH, dp(360), 0f, 4))
+        wrap.addView(list, lp(MATCH, dp(420), 0f, 4))
         val dialog = AlertDialog.Builder(this).setTitle("Vybrat cíl z adresáře").setView(wrap)
             .setNegativeButton("Zrušit", null).create()
         list.setOnItemClickListener { _, _, position, _ -> dialog.dismiss(); onPick(hits[position]) }

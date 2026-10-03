@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Široký posuvník pro pohodlné posouvání dlouhého seznamu palcem -->
+    <style name="WideFastScroll">
+        <item name="android:fastScrollThumbDrawable">@drawable/scroll_thumb</item>
+        <item name="android:fastScrollTrackDrawable">@drawable/scroll_track</item>
+    </style>
+</resources>
