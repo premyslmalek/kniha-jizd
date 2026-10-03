@@ -6,7 +6,10 @@ import android.app.AlertDialog
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.ImageDecoder
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -23,6 +26,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -30,6 +34,8 @@ import android.widget.Toast
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -133,6 +139,8 @@ class MainActivity : Activity() {
     private fun goBack() {
         if (screen == "detail") saveNote()
         if (screen == "settings") saveSettings()
+        // rozpracovaná neuložená účtenka: její fotka se neponechává
+        if (screen == "fuelEdit" && fuelDraft.id == 0L) deletePhoto(fuelDraft.photo)
         screen = if (screen == "fuelEdit") "fuel" else "list"
         render()
     }
@@ -752,7 +760,7 @@ class MainActivity : Activity() {
                 tv(String.format(cs, "%.2f", f.liters) + " l  ·  " + money(f.priceVat) + " Kč vč. DPH", 15f),
                 lp(MATCH, WRAP, 0f, 6)
             )
-            c.addView(tv(money(f.priceNoVat) + " Kč bez DPH", 13f, MUTED), lp(MATCH, WRAP, 0f, 2))
+            c.addView(tv(money(f.priceNoVat) + " Kč bez DPH" + (if (f.photo.isNotEmpty()) "  ·  s fotkou" else "  ·  bez fotky"), 13f, MUTED), lp(MATCH, WRAP, 0f, 2))
             c.isClickable = true
             c.setOnClickListener { fuelDraft = f; fuelMsg = ""; screen = "fuelEdit"; render() }
             body.addView(c, lp(MATCH, WRAP, 0f, 8))
@@ -806,18 +814,58 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Přečte text z fotky účtenky a otevře formulář s předvyplněnými údaji ke kontrole. */
+    private fun deletePhoto(path: String) {
+        if (path.isNotEmpty()) try { File(path).delete() } catch (_: Exception) {}
+    }
+
+    /** Načte fotku ve správném otočení a zmenšenou tak, aby delší strana měla nejvýš zhruba 2000 bodů. */
+    private fun loadBitmap(uri: Uri): Bitmap? {
+        try {
+            if (Build.VERSION.SDK_INT >= 28) {
+                val src = ImageDecoder.createSource(contentResolver, uri)
+                return ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    decoder.setTargetSampleSize(maxOf(1, maxOf(info.size.width, info.size.height) / 2000))
+                }
+            }
+            val opts = BitmapFactory.Options()
+            opts.inSampleSize = 2
+            contentResolver.openInputStream(uri).use { return BitmapFactory.decodeStream(it, null, opts) }
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
+    /** Uloží fotku účtenky do úložiště aplikace a vrátí cestu k souboru (prázdnou při neúspěchu). */
+    private fun savePhoto(bmp: Bitmap): String {
+        return try {
+            val dir = File(filesDir, "uctenky")
+            dir.mkdirs()
+            val f = File(dir, "uctenka_" + System.currentTimeMillis() + ".jpg")
+            FileOutputStream(f).use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+            f.absolutePath
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    /** Uloží fotku účtenky, přečte z ní text a otevře formulář s předvyplněnými údaji ke kontrole. */
     private fun readReceipt(uri: Uri) {
-        val empty = Fuel(0, System.currentTimeMillis(), "", 0.0, 0.0, 0.0)
         val failed = "Z fotky se nepodařilo nic přečíst. Vyplňte údaje ručně."
+        val bmp = loadBitmap(uri)
+        if (bmp == null) {
+            openFuelForm(Fuel(0, System.currentTimeMillis(), "", 0.0, 0.0, 0.0), "Fotku se nepodařilo načíst. Vyplňte údaje ručně.")
+            return
+        }
+        val path = savePhoto(bmp)
+        val empty = Fuel(0, System.currentTimeMillis(), "", 0.0, 0.0, 0.0, path)
         toast("Čtu účtenku…")
         try {
-            val image = InputImage.fromFilePath(this, uri)
-            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).process(image)
+            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).process(InputImage.fromBitmap(bmp, 0))
                 .addOnSuccessListener { res ->
                     if (res.text.isBlank()) openFuelForm(empty, failed)
                     else openFuelForm(
-                        Receipts.parse(res.text),
+                        Receipts.parse(res.text).copy(photo = path),
                         "Údaje jsou přečtené z fotky a mohou být chybné. Zkontrolujte je a opravte před uložením."
                     )
                 }
@@ -825,6 +873,31 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
             openFuelForm(empty, failed)
         }
+    }
+
+    /** Náhled uložené fotky účtenky; klepnutím se zobrazí celá. */
+    private fun photoView(path: String): View? {
+        if (path.isEmpty() || !File(path).exists()) return null
+        val opts = BitmapFactory.Options()
+        opts.inSampleSize = 2
+        val bmp = try { BitmapFactory.decodeFile(path, opts) } catch (e: Throwable) { null } ?: return null
+        val iv = ImageView(this)
+        iv.setImageBitmap(bmp)
+        iv.adjustViewBounds = true
+        iv.maxHeight = dp(240)
+        iv.scaleType = ImageView.ScaleType.FIT_CENTER
+        iv.contentDescription = "Fotka účtenky"
+        iv.isClickable = true
+        iv.setOnClickListener {
+            val full = try { BitmapFactory.decodeFile(path) } catch (e: Throwable) { null } ?: bmp
+            val big = ImageView(this)
+            big.setImageBitmap(full)
+            big.adjustViewBounds = true
+            val sc = ScrollView(this)
+            sc.addView(big)
+            AlertDialog.Builder(this).setView(sc).setPositiveButton("Zavřít", null).show()
+        }
+        return iv
     }
 
     private fun openFuelForm(f: Fuel, msg: String) {
@@ -865,6 +938,11 @@ class MainActivity : Activity() {
             m.setPadding(dp(12), dp(10), dp(12), dp(10))
             body.addView(m, lp(MATCH, WRAP, 0f, 14))
         }
+        val pv0 = photoView(f.photo)
+        if (pv0 != null) {
+            body.addView(pv0, lp(MATCH, WRAP, 0f, 14))
+            body.addView(tv("Fotka účtenky je uložená u záznamu. Klepnutím ji zvětšíte.", 12f, MUTED), lp(MATCH, WRAP, 0f, 4))
+        }
         val date = field(dmy.format(Date(if (f.ts > 0) f.ts else System.currentTimeMillis())), "např. 3.10.2026", "0123456789.")
         val station = field(f.station, "např. MOL Prostějov", null)
         val liters = field(dec(f.liters), "např. 42,15", "0123456789,.")
@@ -902,7 +980,7 @@ class MainActivity : Activity() {
                     val c = Calendar.getInstance()
                     c.time = d
                     c.set(Calendar.HOUR_OF_DAY, 12)
-                    db.fuelSave(Fuel(f.id, c.timeInMillis, station.text.toString().trim(), l, pv, num(noVat)))
+                    db.fuelSave(Fuel(f.id, c.timeInMillis, station.text.toString().trim(), l, pv, num(noVat), f.photo))
                     // přehled účtenek se přepne na měsíc uložené účtenky
                     cal.set(Calendar.YEAR, c.get(Calendar.YEAR))
                     cal.set(Calendar.MONTH, c.get(Calendar.MONTH))
@@ -917,7 +995,7 @@ class MainActivity : Activity() {
                     AlertDialog.Builder(this)
                         .setTitle("Vymazat účtenku?")
                         .setMessage("Akci nelze vrátit.")
-                        .setPositiveButton("Vymazat") { _, _ -> db.fuelDelete(f.id); screen = "fuel"; render() }
+                        .setPositiveButton("Vymazat") { _, _ -> db.fuelDelete(f.id); deletePhoto(f.photo); screen = "fuel"; render() }
                         .setNegativeButton("Ponechat", null)
                         .show()
                 }, lp(MATCH, WRAP, 0f, 10)

@@ -9,7 +9,9 @@ data class Fuel(
     val station: String,
     val liters: Double,
     val priceVat: Double,
-    val priceNoVat: Double
+    val priceNoVat: Double,
+    /** Cesta k uložené fotce účtenky v úložišti aplikace; prázdná u ručně zadané účtenky. */
+    val photo: String = ""
 )
 
 /** Vytažení údajů z textu přečteného z fotky účtenky. Výsledek je jen návrh, uživatel ho před uložením kontroluje. */

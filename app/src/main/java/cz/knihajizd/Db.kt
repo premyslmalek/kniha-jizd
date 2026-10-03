@@ -79,7 +79,7 @@ class Prefs(ctx: Context) {
         set(v) = sp.edit().putInt("stopMin", v).apply()
 }
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 3) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 4) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -94,7 +94,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
     private fun createFuel(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE IF NOT EXISTS fuel(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, station TEXT, " +
-                "liters REAL, price_vat REAL, price_novat REAL)"
+                "liters REAL, price_vat REAL, price_novat REAL, photo TEXT)"
         )
     }
 
@@ -104,11 +104,11 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
         val to = if (month0 == 11) monthStart(year + 1, 0) else monthStart(year, month0 + 1)
         val out = ArrayList<Fuel>()
         readableDatabase.rawQuery(
-            "SELECT id, ts, station, liters, price_vat, price_novat FROM fuel WHERE ts >= ? AND ts < ? ORDER BY ts DESC, id DESC",
+            "SELECT id, ts, station, liters, price_vat, price_novat, photo FROM fuel WHERE ts >= ? AND ts < ? ORDER BY ts DESC, id DESC",
             arrayOf(from.toString(), to.toString())
         ).use { c ->
             while (c.moveToNext()) out.add(
-                Fuel(c.getLong(0), c.getLong(1), c.getString(2) ?: "", c.getDouble(3), c.getDouble(4), c.getDouble(5))
+                Fuel(c.getLong(0), c.getLong(1), c.getString(2) ?: "", c.getDouble(3), c.getDouble(4), c.getDouble(5), c.getString(6) ?: "")
             )
         }
         return out
@@ -117,7 +117,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
     fun fuelSave(f: Fuel) {
         val v = ContentValues()
         v.put("ts", f.ts); v.put("station", f.station); v.put("liters", f.liters)
-        v.put("price_vat", f.priceVat); v.put("price_novat", f.priceNoVat)
+        v.put("price_vat", f.priceVat); v.put("price_novat", f.priceNoVat); v.put("photo", f.photo)
         if (f.id == 0L) writableDatabase.insert("fuel", null, v)
         else writableDatabase.update("fuel", v, "id = ?", arrayOf(f.id.toString()))
     }
@@ -134,6 +134,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createReadings(db)
         if (oldVersion < 3) createFuel(db)
+        else if (oldVersion < 4) db.execSQL("ALTER TABLE fuel ADD COLUMN photo TEXT")
     }
 
     fun readings(): List<Reading> {
