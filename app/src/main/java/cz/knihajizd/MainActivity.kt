@@ -583,9 +583,10 @@ class MainActivity : Activity() {
         }
         val first = trips.first()
         val last = trips.last()
-        val msg = first.startPlace + " → " + last.endPlace + "\n" +
+        val round = db.isRoundTrip(first, last)
+        val msg = first.startPlace + " → " + (if (round) first.endPlace else last.endPlace) + "\n" +
             dateFmt.format(Date(first.startTs)) + " " + timeFmt.format(Date(first.startTs)) + " – " + timeFmt.format(Date(last.endTs)) + "\n" +
-            f1(trips.sumOf { it.km }) + " km\nPoznámka: " + first.startPlace + " -> " + first.endPlace + " a zpět\n\n" +
+            f1(trips.sumOf { it.km }) + " km" + (if (round) "\nPoznámka: " + ROUND_NOTE else "") + "\n\n" +
             "Původní jízdy se nahradí jednou sloučenou. Akci nelze vrátit."
         AlertDialog.Builder(this)
             .setTitle("Sloučit " + trips.size + " jízdy do jedné?")

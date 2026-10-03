@@ -71,6 +71,14 @@ class TrackingService : Service(), LocationListener {
     private var lastMoveTs = 0L
     private var dist = 0.0
     private var status = "S"
+
+    // Pro rozpoznání cesty tam a zpět: nejvzdálenější bod od výjezdu a nejdelší zastávka cestou.
+    private var farLoc: Location? = null
+    private var farDist = 0f
+    private var stopLoc: Location? = null
+    private var stopDur = 0L
+    private var curStopLoc: Location? = null
+    private var curStopTs = 0L
     private var vehicleId = 1L
 
     private val tick = object : Runnable {
@@ -192,6 +200,7 @@ class TrackingService : Service(), LocationListener {
         dist = 0.0
         tripDistM = 0.0
         candidate = 0
+        farLoc = null; farDist = 0f; stopLoc = null; stopDur = 0L; curStopLoc = null
         request(TRIP_MS)
         updateNotification()
         notifyUi()
@@ -237,20 +246,53 @@ class TrackingService : Service(), LocationListener {
             lastLoc = loc
             tripDistM = dist
         }
+        val origin = startLoc
+        if (origin != null) {
+            val fromStart = origin.distanceTo(loc)
+            if (fromStart > farDist) { farDist = fromStart; farLoc = loc }
+        }
         if (speed > MOVE_SPEED) {
+            closeStop(now)
             lastMoveTs = now
             lastMoveLoc = loc
-        } else if (!tripManual && now - lastMoveTs > prefs.stopMin * 60_000L) {
+        } else if (curStopLoc == null) {
+            curStopLoc = loc
+            curStopTs = now
+        }
+        if (speed <= MOVE_SPEED && !tripManual && now - lastMoveTs > prefs.stopMin * 60_000L) {
             finishTrip()
             updateNotification()
         }
+    }
+
+    /** Uzavře právě probíhající zastávku a zapamatuje si ji, pokud je zatím nejdelší. */
+    private fun closeStop(now: Long) {
+        val c = curStopLoc ?: return
+        val dur = now - curStopTs
+        if (dur > stopDur) { stopDur = dur; stopLoc = c }
+        curStopLoc = null
+    }
+
+    /**
+     * Cíl cesty tam a zpět: místo nejdelší zastávky, pokud leží dost daleko od výjezdu,
+     * jinak nejvzdálenější bod trasy.
+     */
+    private fun turnPoint(origin: Location): Location? {
+        val st = stopLoc
+        if (st != null && stopDur >= 60_000L && origin.distanceTo(st) >= farDist * 0.5f) return st
+        return farLoc
     }
 
     private fun finishTrip() {
         val manual = tripManual
         val endTs = if (manual) System.currentTimeMillis() else lastMoveTs
         val s = startLoc
-        val e = if (manual) (lastLoc ?: s) else (lastMoveLoc ?: lastLoc ?: s)
+        val arrived = if (manual) (lastLoc ?: s) else (lastMoveLoc ?: lastLoc ?: s)
+        // Jízda, která skončila tam, kde začala (zastávka v cíli kratší než "Konec jízdy po stání"),
+        // se uloží jako cesta do cíle s poznámkou "TAM A ZPĚT"; km zůstávají za celou cestu.
+        if (!manual) closeStop(lastMoveTs)
+        val round = s != null && arrived != null && farDist > 1000f && s.distanceTo(arrived) < 500f
+        val e = if (round && s != null) (turnPoint(s) ?: arrived) else arrived
         val d = dist
         val sTs = startTs
         val st = status
@@ -270,10 +312,11 @@ class TrackingService : Service(), LocationListener {
             thread {
                 val sp = place(s)
                 val ep = place(e)
-                db.insert(
+                val id = db.insert(
                     sTs, endTs, s?.latitude ?: 0.0, s?.longitude ?: 0.0, e?.latitude ?: 0.0, e?.longitude ?: 0.0,
                     sp, ep, d, st, manual, vid
                 )
+                if (round) db.setNote(id, ROUND_NOTE)
                 notifyUi()
             }
         }

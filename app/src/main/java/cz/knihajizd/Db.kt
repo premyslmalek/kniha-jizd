@@ -30,6 +30,9 @@ data class Trip(
     val avgKmh: Double get() = if (endTs > startTs) distM / ((endTs - startTs) / 1000.0) * 3.6 else 0.0
 }
 
+/** Poznámka u jízdy, která vede do cíle a zpět na místo výjezdu. */
+const val ROUND_NOTE = "TAM A ZPĚT"
+
 class Reading(val ym: String, val km: Int, val ts: Long)
 
 /** Vozidlo: název, SPZ a stav tachometru před první jízdou zaznamenanou v aplikaci. */
@@ -254,22 +257,35 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
         writableDatabase.delete("vehicles", "id = ?", arrayOf(id.toString()))
     }
 
+    /** Vrací se poslední jízda tam, odkud první vyjela? Rozhodují GPS souřadnice, bez nich názvy míst. */
+    fun isRoundTrip(first: Trip, last: Trip): Boolean {
+        if (Places.known(first.sLat, first.sLon) && Places.known(last.eLat, last.eLon)) {
+            val r = FloatArray(1)
+            android.location.Location.distanceBetween(first.sLat, first.sLon, last.eLat, last.eLon, r)
+            return r[0] < 500f
+        }
+        return first.startPlace.trim().equals(last.endPlace.trim(), ignoreCase = true)
+    }
+
     /**
-     * Sloučí jízdy do jedné: začátek (místo, čas, GPS) z první, konec z poslední, km se sečtou.
-     * Poznámka je "místo výjezdu -> cíl první jízdy a zpět"; původní poznámky se připojí za ni.
+     * Sloučí jízdy do jedné; km se sečtou, čas je od začátku první do konce poslední.
+     * Cesta tam a zpět: "od" je výjezd, "do" je cíl první jízdy a poznámka "TAM A ZPĚT" vysvětluje vyšší km.
+     * Jinak na sebe navazující jízdy: "od" z první, "do" z poslední.
      */
     fun mergeTrips(ids: Collection<Long>): Boolean {
         val trips = ids.mapNotNull { get(it) }.sortedBy { it.startTs }
         if (trips.size < 2) return false
         val first = trips.first()
         val last = trips.last()
-        val notes = listOf(first.startPlace + " -> " + first.endPlace + " a zpět") + trips.map { it.note }.filter { it.isNotBlank() }
+        val round = isRoundTrip(first, last)
+        val dest = if (round) first else last
+        val notes = (if (round) listOf(ROUND_NOTE) else emptyList()) + trips.map { it.note }.filter { it.isNotBlank() }
         val w = writableDatabase
         w.beginTransaction()
         try {
             val v = ContentValues()
-            v.put("end_ts", last.endTs); v.put("end_lat", last.eLat); v.put("end_lon", last.eLon)
-            v.put("end_place", last.endPlace); v.put("dist_m", trips.sumOf { it.distM })
+            v.put("end_ts", last.endTs); v.put("end_lat", dest.eLat); v.put("end_lon", dest.eLon)
+            v.put("end_place", dest.endPlace); v.put("dist_m", trips.sumOf { it.distM })
             v.put("note", notes.distinct().joinToString("; "))
             w.update("trips", v, "id = ?", arrayOf(first.id.toString()))
             for (t in trips.drop(1)) w.delete("trips", "id = ?", arrayOf(t.id.toString()))
