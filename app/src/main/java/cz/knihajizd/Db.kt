@@ -93,7 +93,7 @@ class Prefs(ctx: Context) {
         set(v) = sp.edit().putInt("stopMin", v).apply()
 }
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 7) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 8) {
     private val appCtx = ctx.applicationContext
 
     /** Vozidlo, pro které se zobrazují přehledy; 0 = všechna vozidla. */
@@ -202,6 +202,10 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
             db.execSQL("ALTER TABLE vehicles ADD COLUMN home TEXT")
         }
         if (oldVersion < 7) createContacts(db)
+        else if (oldVersion < 8) {
+            db.execSQL("ALTER TABLE contacts ADD COLUMN km_hw REAL")
+            db.execSQL("ALTER TABLE contacts ADD COLUMN km_other REAL")
+        }
     }
 
     fun readings(vehicleId: Long): List<Reading> {
@@ -232,14 +236,16 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
     // ----- adresář cílů -----
 
     private fun createContacts(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS contacts(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, street TEXT, city TEXT, zip TEXT)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS contacts(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, street TEXT, city TEXT, zip TEXT, km_hw REAL, km_other REAL)")
     }
 
     fun contacts(): List<Contact> {
         val out = ArrayList<Contact>()
-        readableDatabase.rawQuery("SELECT id, name, street, city, zip FROM contacts ORDER BY name COLLATE NOCASE", null).use { c ->
+        readableDatabase.rawQuery(// vzestupně podle km po dálnici; firmy bez uvedené vzdálenosti až na konci
+            "SELECT id, name, street, city, zip, km_hw, km_other FROM contacts " +
+                "ORDER BY (COALESCE(km_hw, 0) <= 0), km_hw, name COLLATE NOCASE", null).use { c ->
             while (c.moveToNext()) out.add(
-                Contact(c.getLong(0), c.getString(1) ?: "", c.getString(2) ?: "", c.getString(3) ?: "", c.getString(4) ?: "")
+                Contact(c.getLong(0), c.getString(1) ?: "", c.getString(2) ?: "", c.getString(3) ?: "", c.getString(4) ?: "", c.getDouble(5), c.getDouble(6))
             )
         }
         return out
@@ -253,7 +259,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
             w.delete("contacts", null, null)
             for (c in list) {
                 val v = ContentValues()
-                v.put("name", c.name); v.put("street", c.street); v.put("city", c.city); v.put("zip", c.zip)
+                v.put("name", c.name); v.put("street", c.street); v.put("city", c.city); v.put("zip", c.zip); v.put("km_hw", c.kmHighway); v.put("km_other", c.kmOther)
                 w.insert("contacts", null, v)
             }
             w.setTransactionSuccessful()

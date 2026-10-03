@@ -628,6 +628,8 @@ class MainActivity : Activity() {
                 row.setPadding(0, dp(10), 0, dp(10))
                 row.addView(tv(c.name, 15f, INK, true))
                 if (c.address.isNotBlank()) row.addView(tv(c.address, 13f, MUTED))
+                val km = { v: Double -> if (v > 0.0) f1(v) + " km" else "neuvedeno" }
+                row.addView(tv("Po dálnici: " + km(c.kmHighway) + "  ·  mimo dálnice: " + km(c.kmOther), 13f, INK))
                 row.isClickable = true
                 row.setOnClickListener { dialog.dismiss(); onPick(c) }
                 list.addView(row)
@@ -998,7 +1000,7 @@ class MainActivity : Activity() {
         val nContacts = db.contacts().size
         book.addView(tv(if (nContacts == 0) "Adresář je prázdný" else "Firem v adresáři: $nContacts", 15f, INK, true))
         book.addView(
-            tv("Soubor CSV se sloupci Název firmy, Ulice s č.p., Město, PSČ. Z adresáře pak vyberete cíl při ručním zadání jízdy nebo při úpravě cíle jízdy.", 13f, MUTED),
+            tv("Soubor CSV se sloupci Název firmy, Ulice s č.p., Město, PSČ, vzdálenost po dálnici a vzdálenost mimo dálnice. Z adresáře pak vyberete cíl při ručním zadání jízdy nebo při úpravě cíle jízdy.", 13f, MUTED),
             lp(MATCH, WRAP, 0f, 2)
         )
         book.addView(btn("Nahrát CSV s cíli", Color.WHITE, INK, LINE) { saveSettings(); pickContactsCsv() }, lp(MATCH, WRAP, 0f, 10))

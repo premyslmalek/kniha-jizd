@@ -3,14 +3,18 @@ package cz.knihajizd
 import java.nio.charset.Charset
 
 /** Položka adresáře cílů: firma a její adresa. */
-data class Contact(val id: Long, val name: String, val street: String, val city: String, val zip: String) {
+data class Contact(
+    val id: Long, val name: String, val street: String, val city: String, val zip: String,
+    /** Vzdálenost po dálnici a mimo dálnice v km; 0 = v souboru neuvedeno. */
+    val kmHighway: Double = 0.0, val kmOther: Double = 0.0
+) {
     /** Text, který se zapíše jako cíl jízdy. */
     val place: String get() = listOf(name, street, city).filter { it.isNotBlank() }.joinToString(", ")
     val address: String get() = listOf(street, listOf(zip, city).filter { it.isNotBlank() }.joinToString(" "))
         .filter { it.isNotBlank() }.joinToString(", ")
 }
 
-/** Načtení adresáře z CSV: název firmy, ulice s č.p., město, PSČ. Další sloupce se ignorují. */
+/** Načtení adresáře z CSV: název firmy, ulice s č.p., město, PSČ, vzdálenost po dálnici a mimo dálnice. */
 object ContactsCsv {
 
     /** Soubory z Excelu bývají ve Windows-1250; UTF-8 se pozná podle toho, že jde dekódovat bez chyb. */
@@ -52,15 +56,18 @@ object ContactsCsv {
         var iStreet = find(header, "ulic", "adres")
         var iCity = find(header, "měst", "mest", "obec")
         var iZip = find(header, "psč", "psc")
+        var iOther = header.indexOfFirst { h -> h.lowercase().let { (it.contains("dáln") || it.contains("daln")) && it.contains("mimo") } }
+        var iHw = header.indexOfFirst { h -> h.lowercase().let { (it.contains("dáln") || it.contains("daln")) && !it.contains("mimo") } }
         val hasHeader = iName >= 0
         // bez rozpoznané hlavičky se bere pořadí sloupců: název, ulice, město, PSČ
-        if (!hasHeader) { iName = 0; iStreet = 1; iCity = 2; iZip = 3 }
+        if (!hasHeader) { iName = 0; iStreet = 1; iCity = 2; iZip = 3; iHw = 4; iOther = 5 }
         val out = ArrayList<Contact>()
         for (line in if (hasHeader) lines.drop(1) else lines) {
             val c = splitLine(line, sep)
             val get = { i: Int -> if (i >= 0 && i < c.size) c[i] else "" }
             val name = get(iName)
-            if (name.isNotBlank()) out.add(Contact(0, name, get(iStreet), get(iCity), get(iZip)))
+            val km = { i: Int -> Regex("\\d+([.,]\\d+)?").find(get(i).replace(" ", ""))?.value?.replace(',', '.')?.toDoubleOrNull() ?: 0.0 }
+            if (name.isNotBlank()) out.add(Contact(0, name, get(iStreet), get(iCity), get(iZip), km(iHw), km(iOther)))
         }
         return out
     }
