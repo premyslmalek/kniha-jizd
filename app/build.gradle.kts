@@ -32,3 +32,8 @@ android {
     kotlinOptions { jvmTarget = "17" }
     lint { abortOnError = false }
 }
+
+dependencies {
+    // Čtení textu z fotky účtenky přímo v telefonu (bez odesílání na server).
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+}

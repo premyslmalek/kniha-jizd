@@ -79,7 +79,7 @@ class Prefs(ctx: Context) {
         set(v) = sp.edit().putInt("stopMin", v).apply()
 }
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 2) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", null, 3) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -88,6 +88,42 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
                 "dist_m REAL, status TEXT, manual INTEGER, note TEXT)"
         )
         createReadings(db)
+        createFuel(db)
+    }
+
+    private fun createFuel(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS fuel(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, station TEXT, " +
+                "liters REAL, price_vat REAL, price_novat REAL)"
+        )
+    }
+
+    /** Účtenky za tankování v daném měsíci, nejnovější první. */
+    fun fuelMonth(year: Int, month0: Int): List<Fuel> {
+        val from = monthStart(year, month0)
+        val to = if (month0 == 11) monthStart(year + 1, 0) else monthStart(year, month0 + 1)
+        val out = ArrayList<Fuel>()
+        readableDatabase.rawQuery(
+            "SELECT id, ts, station, liters, price_vat, price_novat FROM fuel WHERE ts >= ? AND ts < ? ORDER BY ts DESC, id DESC",
+            arrayOf(from.toString(), to.toString())
+        ).use { c ->
+            while (c.moveToNext()) out.add(
+                Fuel(c.getLong(0), c.getLong(1), c.getString(2) ?: "", c.getDouble(3), c.getDouble(4), c.getDouble(5))
+            )
+        }
+        return out
+    }
+
+    fun fuelSave(f: Fuel) {
+        val v = ContentValues()
+        v.put("ts", f.ts); v.put("station", f.station); v.put("liters", f.liters)
+        v.put("price_vat", f.priceVat); v.put("price_novat", f.priceNoVat)
+        if (f.id == 0L) writableDatabase.insert("fuel", null, v)
+        else writableDatabase.update("fuel", v, "id = ?", arrayOf(f.id.toString()))
+    }
+
+    fun fuelDelete(id: Long) {
+        writableDatabase.delete("fuel", "id = ?", arrayOf(id.toString()))
     }
 
     private fun createReadings(db: SQLiteDatabase) {
@@ -97,6 +133,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "kniha.db", nu
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createReadings(db)
+        if (oldVersion < 3) createFuel(db)
     }
 
     fun readings(): List<Reading> {

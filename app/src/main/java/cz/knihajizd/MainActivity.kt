@@ -3,6 +3,7 @@ package cz.knihajizd
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -13,8 +14,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.provider.Settings
 import android.text.InputType
+import android.text.method.DigitsKeyListener
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -24,6 +27,9 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -66,6 +72,9 @@ class MainActivity : Activity() {
     private val cal: Calendar = Calendar.getInstance()
     private var manualStatus = "S"
     private var pendingExport = "csv"
+    private var fuelDraft = Fuel(0, 0, "", 0.0, 0.0, 0.0)
+    private var fuelMsg = ""
+    private var cameraUri: Uri? = null
 
     private var statusView: TextView? = null
     private var noteEdit: EditText? = null
@@ -85,11 +94,17 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         db = Db(this)
         prefs = Prefs(this)
+        savedInstanceState?.getString("cameraUri")?.let { cameraUri = Uri.parse(it) }
         cal.set(Calendar.DAY_OF_MONTH, 1)
         root = FrameLayout(this)
         setContentView(root)
         render()
         if (!hasLoc()) askPerms() else if (prefs.mode == "auto") TrackingService.send(this, TrackingService.ACTION_AUTO)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        cameraUri?.let { outState.putString("cameraUri", it.toString()) }
     }
 
     override fun onResume() {
@@ -118,7 +133,7 @@ class MainActivity : Activity() {
     private fun goBack() {
         if (screen == "detail") saveNote()
         if (screen == "settings") saveSettings()
-        screen = "list"
+        screen = if (screen == "fuelEdit") "fuel" else "list"
         render()
     }
 
@@ -225,6 +240,8 @@ class MainActivity : Activity() {
         val v = when (screen) {
             "detail" -> detailScreen()
             "settings" -> settingsScreen()
+            "fuel" -> fuelScreen()
+            "fuelEdit" -> fuelEditScreen()
             else -> listScreen()
         }
         root.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -296,9 +313,13 @@ class MainActivity : Activity() {
         val page = vbox()
         page.setBackgroundColor(GROUND)
 
+        val content = vbox()
+        val top = vbox()
+        top.setBackgroundColor(INK)
+        top.setPadding(dp(16), dp(20), dp(16), dp(8))
         val head = vbox()
         head.setBackgroundColor(INK)
-        head.setPadding(dp(16), dp(20), dp(16), dp(16))
+        head.setPadding(dp(16), dp(4), dp(16), dp(16))
         val nav = hbox()
         nav.gravity = Gravity.CENTER_VERTICAL
         nav.addView(btn("‹", INK2, Color.WHITE) { cal.add(Calendar.MONTH, -1); render() }, lp(dp(56), WRAP))
@@ -306,12 +327,13 @@ class MainActivity : Activity() {
         title.gravity = Gravity.CENTER
         nav.addView(title, lp(0, WRAP, 1f))
         nav.addView(btn("›", INK2, Color.WHITE) { cal.add(Calendar.MONTH, 1); render() }, lp(dp(56), WRAP))
-        head.addView(nav)
+        top.addView(nav)
+        page.addView(top)
         val km = trips.sumOf { it.km }
         val kmS = trips.filter { it.status == "S" }.sumOf { it.km }
         val stats = tv("Jízd: ${trips.size}  ·  Celkem ${f1(km)} km  ·  Služebně ${f1(kmS)} km", 14f, ON_DARK)
         stats.gravity = Gravity.CENTER
-        head.addView(stats, lp(MATCH, WRAP, 0f, 12))
+        head.addView(stats, lp(MATCH, WRAP, 0f, 4))
         val odo = odometer(year, month)
         val odoText = if (odo == null) "Počáteční stav tachometru zadáte v nastavení."
         else "Tachometr v měsíci: ${km0(odo[0])} → ${km0(odo[1])} km\nAktuální stav vozu: ${km0(odo[2])} km"
@@ -335,7 +357,10 @@ class MainActivity : Activity() {
         rb.isClickable = true
         rb.setOnClickListener { readingDialog(year, month) }
         head.addView(rb, lp(MATCH, WRAP, 0f, 10))
-        page.addView(head)
+        val fuelView = tv(fuelSummary(db.fuelMonth(year, month)), 14f, Color.WHITE, true)
+        fuelView.gravity = Gravity.CENTER
+        head.addView(fuelView, lp(MATCH, WRAP, 0f, 10))
+        content.addView(head)
 
         val ctl = card()
         if (!hasLoc()) {
@@ -369,7 +394,7 @@ class MainActivity : Activity() {
         }
         val ctlLp = lp(MATCH, WRAP, 0f, 12)
         ctlLp.leftMargin = dp(16); ctlLp.rightMargin = dp(16)
-        page.addView(ctl, ctlLp)
+        content.addView(ctl, ctlLp)
 
         val list = vbox()
         list.setPadding(dp(16), dp(4), dp(16), dp(16))
@@ -388,13 +413,16 @@ class MainActivity : Activity() {
             list.addView(tripCard(t), lp(MATCH, WRAP, 0f, 8))
         }
         val scroll = ScrollView(this)
-        scroll.addView(list)
+        content.addView(list)
+        scroll.addView(content)
         page.addView(scroll, lp(MATCH, 0, 1f))
 
         val bottom = hbox()
         bottom.setBackgroundColor(Color.WHITE)
         bottom.setPadding(dp(16), dp(10), dp(16), dp(10))
-        bottom.addView(btn("Export měsíce", BLUE, Color.WHITE) { exportDialog() }, lp(0, WRAP, 1f))
+        bottom.setPadding(dp(12), dp(10), dp(12), dp(10))
+        bottom.addView(btn("Účtenky", Color.WHITE, INK, LINE) { screen = "fuel"; render() }, lp(0, WRAP, 1f))
+        bottom.addView(btn("Export", BLUE, Color.WHITE) { exportDialog() }, lp(0, WRAP, 1f, 0, 8))
         bottom.addView(btn("Nastavení", Color.WHITE, INK, LINE) { screen = "settings"; render() }, lp(0, WRAP, 1f, 0, 8))
         page.addView(bottom)
         return page
@@ -680,6 +708,227 @@ class MainActivity : Activity() {
         return page
     }
 
+    // ---------- účtenky za tankování ----------
+
+    private val dmy = SimpleDateFormat("d.M.yyyy", cs)
+
+    private fun money(v: Double): String = String.format(cs, "%,.2f", v)
+
+    private fun fuelSummary(list: List<Fuel>): String =
+        "Tankování v měsíci: " + String.format(cs, "%.2f", list.sumOf { it.liters }) + " l  ·  " +
+            money(list.sumOf { it.priceVat }) + " Kč vč. DPH"
+
+    private fun fuelScreen(): View {
+        val year = cal.get(Calendar.YEAR)
+        val month = cal.get(Calendar.MONTH)
+        val items = db.fuelMonth(year, month)
+        val page = vbox()
+        page.setBackgroundColor(GROUND)
+        page.setPadding(dp(16), dp(16), dp(16), dp(16))
+        page.addView(topBar("Účtenky – " + MONTHS[month] + " " + year))
+
+        val body = vbox()
+        val sum = card()
+        sum.addView(tv(fuelSummary(items), 15f, INK, true))
+        sum.addView(
+            tv("Bez DPH: " + money(items.sumOf { it.priceNoVat }) + " Kč  ·  účtenek: " + items.size, 13f, MUTED),
+            lp(MATCH, WRAP, 0f, 4)
+        )
+        body.addView(sum, lp(MATCH, WRAP, 0f, 14))
+        body.addView(btn("Zadat účtenku", GREEN, Color.WHITE) { newReceiptDialog() }, lp(MATCH, WRAP, 0f, 10))
+
+        if (items.isEmpty()) {
+            val e = tv("V tomto měsíci zatím není žádná účtenka.", 15f, MUTED)
+            e.gravity = Gravity.CENTER
+            body.addView(e, lp(MATCH, WRAP, 0f, 30))
+        }
+        for (f in items) {
+            val c = card()
+            val top = hbox()
+            top.addView(tv(f.station.ifBlank { "Neuvedeno" }, 16f, INK, true), lp(0, WRAP, 1f))
+            top.addView(tv(dmy.format(Date(f.ts)), 13f, MUTED))
+            c.addView(top)
+            c.addView(
+                tv(String.format(cs, "%.2f", f.liters) + " l  ·  " + money(f.priceVat) + " Kč vč. DPH", 15f),
+                lp(MATCH, WRAP, 0f, 6)
+            )
+            c.addView(tv(money(f.priceNoVat) + " Kč bez DPH", 13f, MUTED), lp(MATCH, WRAP, 0f, 2))
+            c.isClickable = true
+            c.setOnClickListener { fuelDraft = f; fuelMsg = ""; screen = "fuelEdit"; render() }
+            body.addView(c, lp(MATCH, WRAP, 0f, 8))
+        }
+        val scroll = ScrollView(this)
+        scroll.addView(body)
+        page.addView(scroll, lp(MATCH, 0, 1f))
+        return page
+    }
+
+    private fun newReceiptDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Nová účtenka")
+            .setItems(arrayOf("Vyfotit účtenku", "Vybrat fotku z galerie", "Zadat ručně")) { _, which ->
+                when (which) {
+                    0 -> takePhoto()
+                    1 -> pickImage()
+                    else -> openFuelForm(Fuel(0, System.currentTimeMillis(), "", 0.0, 0.0, 0.0), "")
+                }
+            }
+            .show()
+    }
+
+    private fun pickImage() {
+        val i = Intent(Intent.ACTION_GET_CONTENT)
+        i.addCategory(Intent.CATEGORY_OPENABLE)
+        i.type = "image/*"
+        try {
+            startActivityForResult(i, 8)
+        } catch (e: Exception) {
+            toast("V telefonu chybí aplikace pro výběr obrázků.")
+        }
+    }
+
+    private fun takePhoto() {
+        // Na starším Androidu by focení do galerie vyžadovalo další oprávnění, proto se nabídne výběr fotky.
+        if (Build.VERSION.SDK_INT < 29) { pickImage(); return }
+        try {
+            val v = ContentValues()
+            v.put(MediaStore.Images.Media.DISPLAY_NAME, "uctenka_" + System.currentTimeMillis() + ".jpg")
+            v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v)
+            if (uri == null) { pickImage(); return }
+            cameraUri = uri
+            val i = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+            i.putExtra(MediaStore.EXTRA_OUTPUT, uri)
+            i.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            startActivityForResult(i, 9)
+        } catch (e: Exception) {
+            toast("Fotoaparát se nepodařilo otevřít. Vyberte fotku z galerie.")
+        }
+    }
+
+    /** Přečte text z fotky účtenky a otevře formulář s předvyplněnými údaji ke kontrole. */
+    private fun readReceipt(uri: Uri) {
+        val empty = Fuel(0, System.currentTimeMillis(), "", 0.0, 0.0, 0.0)
+        val failed = "Z fotky se nepodařilo nic přečíst. Vyplňte údaje ručně."
+        toast("Čtu účtenku…")
+        try {
+            val image = InputImage.fromFilePath(this, uri)
+            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).process(image)
+                .addOnSuccessListener { res ->
+                    if (res.text.isBlank()) openFuelForm(empty, failed)
+                    else openFuelForm(
+                        Receipts.parse(res.text),
+                        "Údaje jsou přečtené z fotky a mohou být chybné. Zkontrolujte je a opravte před uložením."
+                    )
+                }
+                .addOnFailureListener { openFuelForm(empty, failed) }
+        } catch (e: Exception) {
+            openFuelForm(empty, failed)
+        }
+    }
+
+    private fun openFuelForm(f: Fuel, msg: String) {
+        fuelDraft = f
+        fuelMsg = msg
+        screen = "fuelEdit"
+        render()
+    }
+
+    private fun field(value: String, hint: String, digits: String?): EditText {
+        val e = EditText(this)
+        e.setText(value)
+        e.hint = hint
+        e.textSize = 16f
+        e.setSingleLine(true)
+        e.background = bg(Color.WHITE, 12, LINE)
+        e.setPadding(dp(12), dp(12), dp(12), dp(12))
+        if (digits != null) e.keyListener = DigitsKeyListener.getInstance(digits)
+        return e
+    }
+
+    private fun num(e: EditText): Double =
+        e.text.toString().trim().replace(" ", "").replace(',', '.').toDoubleOrNull() ?: 0.0
+
+    private fun dec(v: Double): String = if (v > 0.0) String.format(cs, "%.2f", v) else ""
+
+    private fun fuelEditScreen(): View {
+        val f = fuelDraft
+        val page = vbox()
+        page.setBackgroundColor(GROUND)
+        page.setPadding(dp(16), dp(16), dp(16), dp(16))
+        page.addView(topBar(if (f.id == 0L) "Nová účtenka" else "Účtenka"))
+
+        val body = vbox()
+        if (fuelMsg.isNotEmpty()) {
+            val m = tv(fuelMsg, 14f, ORANGE, true)
+            m.background = bg(ORANGE_BG, 12)
+            m.setPadding(dp(12), dp(10), dp(12), dp(10))
+            body.addView(m, lp(MATCH, WRAP, 0f, 14))
+        }
+        val date = field(dmy.format(Date(if (f.ts > 0) f.ts else System.currentTimeMillis())), "např. 3.10.2026", "0123456789.")
+        val station = field(f.station, "např. MOL Prostějov", null)
+        val liters = field(dec(f.liters), "např. 42,15", "0123456789,.")
+        val vat = field(dec(f.priceVat), "např. 1560,00", "0123456789,.")
+        val noVat = field(dec(f.priceNoVat), "např. 1289,26", "0123456789,.")
+
+        body.addView(tv("Datum", 14f, INK, true), lp(MATCH, WRAP, 0f, 14))
+        body.addView(date, lp(MATCH, WRAP, 0f, 6))
+        body.addView(tv("Čerpací stanice", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        body.addView(station, lp(MATCH, WRAP, 0f, 6))
+        body.addView(tv("Počet litrů", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        body.addView(liters, lp(MATCH, WRAP, 0f, 6))
+        body.addView(tv("Cena vč. DPH (Kč)", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        body.addView(vat, lp(MATCH, WRAP, 0f, 6))
+        body.addView(tv("Cena bez DPH (Kč)", 14f, INK, true), lp(MATCH, WRAP, 0f, 12))
+        body.addView(noVat, lp(MATCH, WRAP, 0f, 6))
+        body.addView(
+            btn("Dopočítat cenu bez DPH (21 %)", Color.WHITE, INK, LINE) {
+                val v = num(vat)
+                if (v > 0.0) noVat.setText(dec(Math.round(v / 1.21 * 100.0) / 100.0))
+                else toast("Nejdřív zadejte cenu vč. DPH.")
+            }, lp(MATCH, WRAP, 0f, 8)
+        )
+
+        body.addView(
+            btn("Uložit účtenku", GREEN, Color.WHITE) {
+                val fmt = SimpleDateFormat("d.M.yyyy", cs)
+                fmt.isLenient = false
+                val d = try { fmt.parse(date.text.toString().trim().replace(" ", "")) } catch (e: Exception) { null }
+                val l = num(liters)
+                val pv = num(vat)
+                if (d == null) toast("Datum zadejte ve tvaru 3.10.2026.")
+                else if (l <= 0.0 || pv <= 0.0) toast("Vyplňte počet litrů a cenu vč. DPH.")
+                else {
+                    val c = Calendar.getInstance()
+                    c.time = d
+                    c.set(Calendar.HOUR_OF_DAY, 12)
+                    db.fuelSave(Fuel(f.id, c.timeInMillis, station.text.toString().trim(), l, pv, num(noVat)))
+                    // přehled účtenek se přepne na měsíc uložené účtenky
+                    cal.set(Calendar.YEAR, c.get(Calendar.YEAR))
+                    cal.set(Calendar.MONTH, c.get(Calendar.MONTH))
+                    screen = "fuel"
+                    render()
+                }
+            }, lp(MATCH, WRAP, 0f, 18)
+        )
+        if (f.id != 0L) {
+            body.addView(
+                btn("Vymazat účtenku", Color.WHITE, RED, LINE) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Vymazat účtenku?")
+                        .setMessage("Akci nelze vrátit.")
+                        .setPositiveButton("Vymazat") { _, _ -> db.fuelDelete(f.id); screen = "fuel"; render() }
+                        .setNegativeButton("Ponechat", null)
+                        .show()
+                }, lp(MATCH, WRAP, 0f, 10)
+            )
+        }
+        val scroll = ScrollView(this)
+        scroll.addView(body)
+        page.addView(scroll, lp(MATCH, 0, 1f))
+        return page
+    }
+
     // ---------- export ----------
 
     private fun exportDialog() {
@@ -706,6 +955,16 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 8 || requestCode == 9) {
+            val uri = if (requestCode == 9) cameraUri else data?.data
+            if (resultCode == RESULT_OK && uri != null) readReceipt(uri)
+            else if (requestCode == 9 && uri != null) {
+                // focení zrušeno – prázdný záznam v galerii se odstraní
+                try { contentResolver.delete(uri, null, null) } catch (_: Exception) {}
+            }
+            if (requestCode == 9) cameraUri = null
+            return
+        }
         if (requestCode != 7 || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         val year = cal.get(Calendar.YEAR)
@@ -724,7 +983,8 @@ class MainActivity : Activity() {
                         "Tachometr: ${km0(o[0])} → ${km0(o[1])} km" +
                             (if (adj != null) " (dorovnání ${signed(adj)} km)" else "")
                     }
-                    Export.pdf(it, "Kniha jízd – " + MONTHS[month] + " " + year, trips, odoTxt)
+                    val extra = listOfNotNull(odoTxt, fuelSummary(db.fuelMonth(year, month))).joinToString("   ")
+                    Export.pdf(it, "Kniha jízd – " + MONTHS[month] + " " + year, trips, extra)
                 }
             }
             toast("Soubor je uložen.")
